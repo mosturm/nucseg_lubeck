@@ -1,0 +1,21 @@
+python3 -m venv ~/envs/cellpose-clean
+source ~/envs/cellpose-clean/bin/activate
+
+# 2) modern build tools, but avoid NumPy 2
+python -m pip install --upgrade pip setuptools wheel
+
+# 3) install a NumPy version < 2 and matching SciPy/Matplotlib
+#    (these versions are known good with Cellpose + PyTorch on Python 3.10)
+pip install "numpy<2" "scipy>=1.10,<1.13" "matplotlib<3.9"
+
+# 4) install PyTorch
+#    GPU option (replace cu121 if your GPU needs a different one):
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#    CPU-only option (works anywhere):
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# 5) install cellpose
+pip install "cellpose==4.0.6"
+
+
+scp -pC /home/mo/Desktop/CellSegLubeck/*.tif   ubuntu@129.146.176.151:/home/ubuntu/cellseglubeck/
