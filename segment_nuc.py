@@ -62,7 +62,7 @@ MINI_TEST_ZS    = (5, 8)  # [z0, z1) exported to test
 MIN_MASKS_TRAIN = 1
 
 # Training knobs
-N_EPOCHS      = 29
+N_EPOCHS      = 120
 LEARNING_RATE = 1e-5
 WEIGHT_DECAY  = 0.1
 BATCH_SIZE    = 1   # effective; cellpose uses internal batching on crops
@@ -72,7 +72,7 @@ MODEL_NAME      = "my_3d_finetune"
 # Inference knobs (relax thresholds to avoid empty predictions early on)
 DO_3D              = True
 ANISOTROPY         = 1.0   # set if Z spacing differs from XY; else 1.0
-CELLPROB_THRESHOLD = -6.0
+CELLPROB_THRESHOLD = -6
 FLOW_THRESHOLD     = 0.4
 
 RNG_SEED = 0
