@@ -1,3 +1,4 @@
+# 1)
 python3 -m venv ~/envs/cellpose-clean
 source ~/envs/cellpose-clean/bin/activate
 
@@ -10,12 +11,11 @@ pip install "numpy<2" "scipy>=1.10,<1.13" "matplotlib<3.9" "pandas" "scikit-imag
 
 # 4) install PyTorch
 #    GPU option (replace cu121 if your GPU needs a different one):
-# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-#    CPU-only option (works anywhere):
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
 
 # 5) install cellpose
 pip install "cellpose==4.0.6"
 
 
-scp -pC /home/mo/Desktop/CellSegLubeck/*.tif   ubuntu@129.146.176.151:/home/ubuntu/cellseglubeck/
+scp -pC /home/mo/Desktop/CellSegLubeck/*.tif   ubuntu@138.2.233.225:/home/ubuntu/cellseglubeck/

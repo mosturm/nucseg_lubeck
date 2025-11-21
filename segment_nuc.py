@@ -28,7 +28,7 @@ from PIL import Image
 import colorsys
 
 from cellpose import io, models, core, train
-
+#io.logger_setup()
 # --------------------------------------------------------------------------------------
 # User knobs
 
@@ -444,9 +444,10 @@ def main():
 
     # Train Cellpose model
     print("Training...")
-    model = models.CellposeModel(gpu=use_gpu)  # much faster than CPSAM
+    model = models.CellposeModel(gpu=use_gpu)
 
-    print("Training...")
+    print("Training... (This will take a while: 100 Epochs ~ 1 hour with two tif-pairs)")
+    print("I couldn't get the logger to actual print the epochs, so it will appear frozen, but it trains! (Maybe go for lunch)")
     model_path, train_losses, test_losses = train.train_seg(
         model.net,
         train_data=images, train_labels=labels,

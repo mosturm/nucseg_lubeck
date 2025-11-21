@@ -1,0 +1,7 @@
+# Ignore folders at repo root
+/png_eval/
+/dataset/
+/models/
+
+# Ignore all .tif files in the main (root) folder only
+/*.tif
