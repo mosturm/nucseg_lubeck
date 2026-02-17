@@ -26,6 +26,7 @@ import numpy as np
 import tifffile as tiff
 from PIL import Image
 import colorsys
+import nrrd
 
 from cellpose import io, models, core, train
 #io.logger_setup()
@@ -33,7 +34,7 @@ from cellpose import io, models, core, train
 # User knobs
 
 # Input 3D stacks
-DATA_DIR = "."
+DATA_DIR = "/projects/crunchie/Jan/Daten/Labeling_Hippo_dataset"
 
 # Dataset destination
 DATASET_DIR = "dataset"
@@ -51,7 +52,7 @@ CONNECTIVITY = 2
 
 # Choose which quadrant to hold out for testing (TL, TR, BL, BR)
 TEST_QUADRANT = "BR"
-SPLIT_SIZE = 512  # expected XY size (Y=X=512). If different, adjust split_quadrants().
+SPLIT_SIZE    = 256 #512  # expected XY size (Y=X=512). If different, adjust split_quadrants().
 
 # Export only a tiny subset for quick debugging; set False for full export
 MINI_DEBUG      = False
@@ -67,7 +68,7 @@ LEARNING_RATE = 1e-5
 WEIGHT_DECAY  = 0.1
 BATCH_SIZE    = 1   # effective; cellpose uses internal batching on crops
 DIAMETER      = None  # let cellpose estimate; or set a float like 20.0
-MODEL_NAME      = "my_3d_finetune"
+MODEL_NAME    = "my_3d_finetune"
 
 # Inference knobs (relax thresholds to avoid empty predictions early on)
 DO_3D              = True
@@ -179,7 +180,7 @@ def iter_img_mask_pairs(root="."):
     """
     root = Path(root)
     for img_path in sorted(root.glob("*_img.tif")):
-        mask_path = img_path.with_name(img_path.name.replace("_img.tif", "_masks.tif"))
+        mask_path = img_path.with_name(img_path.name.replace("_img.tif", "_label.seg.nrrd")) #_label.tif
         if mask_path.exists():
             sample_id = img_path.stem.replace("_img", "")  # e.g. 'roi01_id0062_t0018_Rohrle17_2'
             yield img_path, mask_path, sample_id
@@ -351,10 +352,10 @@ def main():
     Path(TRAIN_DIR).mkdir(parents=True, exist_ok=True)
     Path(TEST_DIR).mkdir(parents=True, exist_ok=True)
 
-    print("\nScanning for *_img.tif / *_masks.tif pairs ...")
+    print("\nScanning for *_img.tif / *_label.seg.nrrd pairs ...")
     pairs = list(iter_img_mask_pairs(DATA_DIR))
     if not pairs:
-        raise FileNotFoundError(f"No *_img.tif / *_masks.tif pairs found in {DATA_DIR}")
+        raise FileNotFoundError(f"No *_img.tif / *_label.seg.nrrd pairs found in {DATA_DIR}")
 
     # Fresh dataset folder
     if Path(DATASET_DIR).exists():
@@ -369,7 +370,8 @@ def main():
     for img_path, mask_path, sample_id in pairs:
         print(f"Loading volumes for {sample_id} ...")
         vol = tiff.imread(str(img_path))
-        msk = tiff.imread(str(mask_path))
+        msk = np.permute_dims(nrrd.read(str(mask_path))[0],axes=(1,0,2)) #tiff.imread(str(mask_path))
+        msk[msk!=1] = 0     # set background to zero!!
 
         vol = ensure_zyx(vol, "image")
         msk = ensure_zyx(msk, "mask")

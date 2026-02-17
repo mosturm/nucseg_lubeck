@@ -25,14 +25,17 @@ The main script is: **`segment_nuc.py`**.
 # 1) create virtual environment
 python3 -m venv ~/envs/cellpose-clean
 source ~/envs/cellpose-clean/bin/activate
+# did not work on geri so alternatively
+conda create -n cellpose-clean python=3
+conda activate cellpose-clean
 
 # 2) modern build tools
 python -m pip install --upgrade pip setuptools wheel
 
-# 3) install scientific stack (NumPy < 2, versions compatible with Cellpose + PyTorch)
+# 3) install scientific stack (NumPy < 2, versions compatible with Cellpose + PyTorch) --> scipy created an error for me, so I didn't install it...
 pip install "numpy<2" "scipy>=1.10,<1.13" "matplotlib<3.9" "pandas" "scikit-image" "plotly" "pyarrow"
 
-# 4) install PyTorch (GPU build; adjust CUDA version if needed)
+# 4) install PyTorch (GPU build; adjust CUDA version if needed) --> Url didn't work for me, so I just left that part out
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
 # 5) install Cellpose 4 (includes Cellpose-SAM)
