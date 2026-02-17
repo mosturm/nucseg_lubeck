@@ -16,69 +16,19 @@ Assumptions:
 
 from __future__ import annotations
 
-import os
 import glob
 import shutil
 from pathlib import Path
-from typing import Tuple, Dict
+from typing import Dict
 
 import numpy as np
 import tifffile as tiff
 from PIL import Image
 import colorsys
+import argparse
 import nrrd
 
 from cellpose import io, models, core, train
-#io.logger_setup()
-# --------------------------------------------------------------------------------------
-# User knobs
-
-# Input 3D stacks
-DATA_DIR = "/projects/crunchie/Jan/Daten/Labeling_Hippo_dataset"
-
-# Dataset destination
-DATASET_DIR = "dataset"
-TRAIN_DIR   = f"{DATASET_DIR}/train"
-TEST_DIR    = f"{DATASET_DIR}/test"
-
-# Geometry / orientation
-# If you KNOW which axis is Z in your arrays, set Z_AXIS to 0/1/2; else leave None to auto-guess.
-Z_AXIS: int | None = None
-# If there is a channel axis, set it (e.g., 0/1/2/3). If single-channel images, keep None.
-CHANNEL_AXIS: int | None = None
-
-# Connected components: 1 = 4-connectivity; 2 = 8-connectivity
-CONNECTIVITY = 2
-
-# Choose which quadrant to hold out for testing (TL, TR, BL, BR)
-TEST_QUADRANT = "BR"
-SPLIT_SIZE    = 256 #512  # expected XY size (Y=X=512). If different, adjust split_quadrants().
-
-# Export only a tiny subset for quick debugging; set False for full export
-MINI_DEBUG      = False
-MINI_TRAIN_ZS   = (0, 3)  # [z0, z1) exported to train
-MINI_TEST_ZS    = (5, 8)  # [z0, z1) exported to test
-
-# Instance count filter for keeping training slices
-MIN_MASKS_TRAIN = 1
-
-# Training knobs
-N_EPOCHS      = 120
-LEARNING_RATE = 1e-5
-WEIGHT_DECAY  = 0.1
-BATCH_SIZE    = 1   # effective; cellpose uses internal batching on crops
-DIAMETER      = None  # let cellpose estimate; or set a float like 20.0
-MODEL_NAME    = "my_3d_finetune"
-
-# Inference knobs (relax thresholds to avoid empty predictions early on)
-DO_3D              = True
-ANISOTROPY         = 1.0   # set if Z spacing differs from XY; else 1.0
-CELLPROB_THRESHOLD = -6
-FLOW_THRESHOLD     = 0.4
-
-RNG_SEED = 0
-# --------------------------------------------------------------------------------------
-
 
 # ---------------------- Utilities: connected components -------------------------------
 
@@ -122,7 +72,7 @@ cc_label2d = _get_cc_label()
 
 # ---------------------- Utilities: orientation / slicing -------------------------------
 
-def ensure_zyx(arr: np.ndarray, name: str = "array") -> np.ndarray:
+def ensure_zyx(arr: np.ndarray, CHANNEL_AXIS: int, Z_AXIS: int, name: str = "array") -> np.ndarray:
     """
     Ensure array is (Z, Y, X). If Z_AXIS is provided, move that axis to 0 and
     squeeze any singleton channel axis. Otherwise, auto-guess Z as the smallest
@@ -160,7 +110,7 @@ def ensure_zyx(arr: np.ndarray, name: str = "array") -> np.ndarray:
     return a
 
 
-def split_quadrants(vol: np.ndarray) -> Dict[str, np.ndarray]:
+def split_quadrants(vol: np.ndarray, SPLIT_SIZE: int) -> Dict[str, np.ndarray]:
     """Return dict of four XY quadrants along the last two dims (Y, X)."""
     Z, Y, X = vol.shape
     if (Y, X) != (SPLIT_SIZE, SPLIT_SIZE):
@@ -253,14 +203,14 @@ def is_binary_mask(msk2d: np.ndarray) -> bool:
     return False
 
 
-def to_instances_2d(msk2d: np.ndarray) -> np.ndarray:
+def to_instances_2d(msk2d: np.ndarray, CONNECTIVITY: int) -> np.ndarray:
     """Convert 0/1 or 0/255 to connected-component instance labels; else trust labels."""
     if is_binary_mask(msk2d):
         return cc_label2d((msk2d > 0), connectivity=CONNECTIVITY).astype(np.int32)
     return msk2d.astype(np.int32)
 
 
-def count_instances_2d(msk2d: np.ndarray) -> int:
+def count_instances_2d(msk2d: np.ndarray, CONNECTIVITY: int) -> int:
     """Count instances consistently with to_instances_2d."""
     if is_binary_mask(msk2d):
         lab = cc_label2d((msk2d > 0), connectivity=CONNECTIVITY)
@@ -297,7 +247,7 @@ def save_debug_masks(msk_raw_2d: np.ndarray, inst_2d: np.ndarray, outdir: str | 
 
 # ---------------------- Exporters -----------------------------------------------------
 
-def export_xy_slices(vol: np.ndarray, msk: np.ndarray, outdir: str | Path, tag: str) -> int:
+def export_xy_slices(vol: np.ndarray, msk: np.ndarray, outdir: str | Path, tag: str, CONNECTIVITY: int) -> int:
     """Export all Z slices to 2D files."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -305,7 +255,7 @@ def export_xy_slices(vol: np.ndarray, msk: np.ndarray, outdir: str | Path, tag: 
     for z in range(vol.shape[0]):
         img2d = vol[z]
         raw2d = msk[z]
-        msk2d = to_instances_2d(raw2d)
+        msk2d = to_instances_2d(raw2d, CONNECTIVITY)
         stem = f"{tag}_z{z:03d}"
 
         # training files
@@ -320,7 +270,7 @@ def export_xy_slices(vol: np.ndarray, msk: np.ndarray, outdir: str | Path, tag: 
 
 
 def export_xy_slices_subset(vol: np.ndarray, msk: np.ndarray, outdir: str | Path, tag: str,
-                            z0: int, z1: int) -> int:
+                            z0: int, z1: int, CONNECTIVITY: int) -> int:
     """Export a Z-range [z0, z1) for quick debug."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -328,7 +278,7 @@ def export_xy_slices_subset(vol: np.ndarray, msk: np.ndarray, outdir: str | Path
     for z in range(z0, min(z1, vol.shape[0])):
         img2d = vol[z]
         raw2d = msk[z]
-        msk2d = to_instances_2d(raw2d)
+        msk2d = to_instances_2d(raw2d, CONNECTIVITY)
         stem = f"{tag}_z{z:03d}"
         tiff.imwrite(outdir / f"{stem}_img.tif", img2d, photometric="minisblack")
         tiff.imwrite(outdir / f"{stem}_masks.tif", msk2d.astype(np.int32))
@@ -342,7 +292,7 @@ def export_xy_slices_subset(vol: np.ndarray, msk: np.ndarray, outdir: str | Path
 
 # ---------------------- Main ----------------------------------------------------------
 
-def main():
+def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, TEST_QUADRANT, SPLIT_SIZE, CHANNEL_AXIS, Z_AXIS, MINI_DEBUG, MINI_TRAIN_ZS, MINI_TEST_ZS, CONNECTIVITY, MIN_MASKS_TRAIN, N_EPOCHS, LEARNING_RATE, WEIGHT_DECAY, BATCH_SIZE, MODEL_NAME, DO_3D, ANISOTROPY, CELLPROB_THRESHOLD, FLOW_THRESHOLD):
     np.random.seed(RNG_SEED)
     here = Path(".").resolve()
 
@@ -373,12 +323,12 @@ def main():
         msk = np.permute_dims(nrrd.read(str(mask_path))[0],axes=(1,0,2)) #tiff.imread(str(mask_path))
         msk[msk!=1] = 0     # set background to zero!!
 
-        vol = ensure_zyx(vol, "image")
-        msk = ensure_zyx(msk, "mask")
+        vol = ensure_zyx(vol, CHANNEL_AXIS, Z_AXIS, "image")
+        msk = ensure_zyx(msk, CHANNEL_AXIS, Z_AXIS, "mask")
         assert vol.shape == msk.shape, f"[{sample_id}] shape mismatch: {vol.shape} vs {msk.shape}"
 
-        img_quads = split_quadrants(vol)
-        msk_quads = split_quadrants(msk)
+        img_quads = split_quadrants(vol, SPLIT_SIZE)
+        msk_quads = split_quadrants(msk, SPLIT_SIZE)
 
         if TEST_QUADRANT not in img_quads:
             raise ValueError("TEST_QUADRANT must be in {'TL','TR','BL','BR'}")
@@ -392,19 +342,19 @@ def main():
             z0, z1 = MINI_TRAIN_ZS
             for q in train_quads:
                 total_train_slices += export_xy_slices_subset(
-                    img_quads[q], msk_quads[q], TRAIN_DIR, f"{sample_id}_tile_{q}", z0, z1
+                    img_quads[q], msk_quads[q], TRAIN_DIR, f"{sample_id}_tile_{q}", z0, z1, CONNECTIVITY
                 )
             z0t, z1t = MINI_TEST_ZS
             total_test_slices += export_xy_slices_subset(
-                test_img, test_msk, TEST_DIR, f"{sample_id}_tile_{TEST_QUADRANT}", z0t, z1t
+                test_img, test_msk, TEST_DIR, f"{sample_id}_tile_{TEST_QUADRANT}", z0t, z1t, CONNECTIVITY
             )
         else:
             for q in train_quads:
                 total_train_slices += export_xy_slices(
-                    img_quads[q], msk_quads[q], TRAIN_DIR, f"{sample_id}_tile_{q}"
+                    img_quads[q], msk_quads[q], TRAIN_DIR, f"{sample_id}_tile_{q}", CONNECTIVITY
                 )
             total_test_slices += export_xy_slices(
-                test_img, test_msk, TEST_DIR, f"{sample_id}_tile_{TEST_QUADRANT}"
+                test_img, test_msk, TEST_DIR, f"{sample_id}_tile_{TEST_QUADRANT}", CONNECTIVITY
             )
 
         # keep for eval/overlays later
@@ -429,7 +379,7 @@ def main():
 
     # Filter training slices to those with >= MIN_MASKS_TRAIN instances
     def _count(msk2d):
-        return count_instances_2d(msk2d)
+        return count_instances_2d(msk2d, CONNECTIVITY)
 
     tr = [(im, lb) for im, lb in zip(images, labels) if _count(lb) >= MIN_MASKS_TRAIN]
     if len(tr) == 0:
@@ -493,4 +443,35 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Train a 3D cell segmentation model")
+    # seed and dataset paths
+    parser.add_argument("--rng_seed",               type=int, default=0,         help="Random seed for reproducibility")
+    parser.add_argument("--dataset_dir",            type=str, default="dataset", help="Dataset destination")
+    parser.add_argument("--data_dir",               type=str, default="/projects/crunchie/Jan/Daten/Labeling_Hippo_dataset", help="Input 3D stacks")
+    # testing
+    parser.add_argument("--test_quadrant",          type=str, default="BR",      choices=["TL", "TR", "BL", "BR"], help="Quadrant to hold out for testing")
+    parser.add_argument("--split_size",             type=int, default=512,       help="Expected XY size for quadrant split (default 512 for 512x512 images)")
+    # geometry
+    parser.add_argument("--channel_axis",           type=int, default=None,      help="Channel axis if present (e.g., 0/1/2/3), or None if single-channel")
+    parser.add_argument("--z_axis",                 type=int, default=None,      help="Z axis if known (0/1/2), or None to auto-guess")
+    # debugging
+    parser.add_argument("--mini_debug",             action="store_true",         help="Export only a small subset of slices for quick debugging")
+    parser.add_argument("--mini_train_zs",          type=int, nargs=2,           default=(0, 3), help="Z range [z0, z1) for mini debug train export")
+    parser.add_argument("--mini_test_zs",           type=int, nargs=2,           default=(5, 8), help="Z range [z0, z1) for mini debug test export")
+    # training settings
+    parser.add_argument("--connectivity",           type=int,   default=2,       choices=[1, 2], help="Connectivity for instance labeling (1=4-connectivity, 2=8-connectivity)")
+    parser.add_argument("--min_masks_train",        type=int,   default=1,       help="Minimum number of instances in a training slice to keep it (default 1)")
+    parser.add_argument("--n_epochs",               type=int,   default=120,     help="Number of training epochs")
+    parser.add_argument("--learning_rate",          type=float, default=1e-5,    help="Learning rate for training")
+    parser.add_argument("--weight_decay",           type=float, default=0.1,     help="Weight decay for training")
+    parser.add_argument("--batch_size",             type=int,   default=1,       help="Batch size for training (effective; cellpose uses internal cropping)")
+    parser.add_argument("--diameter",               type=float, default=None,    help="Diameter for cellpose (None to let it estimate)")
+    parser.add_argument("--model_name",             type=str,   default="my_3d_finetune", help="Name for the trained model")
+    # inference settings
+    parser.add_argument("--do_3d",                  action="store_true",         help="Run 3D inference (default is 2D slice-by-slice)") 
+    parser.add_argument("--anisotropy",             type=float, default=1.0,     help="Anisotropy factor for 3D inference (Z spacing / XY spacing)")
+    parser.add_argument("--cellprob_threshold",     type=float, default=-6,      help="Cell probability threshold for 3D inference (lower to get more predictions early on)")
+    parser.add_argument("--flow_threshold",         type=float, default=0.4,     help="Flow threshold for 3D inference (lower to get more predictions early on)")
+    args = parser.parse_args()
+
+    main(args.rng_seed, args.dataset_dir, f"{args.dataset_dir}/train", f"{args.dataset_dir}/test", args.data_dir, args.test_quadrant, args.split_size, args.channel_axis, args.z_axis, args.mini_debug, args.mini_train_zs, args.mini_test_zs, args.connectivity, args.min_masks_train, args.n_epochs, args.learning_rate, args.weight_decay, args.batch_size, args.model_name, args.do_3d, args.anisotropy, args.cellprob_threshold, args.flow_threshold)
