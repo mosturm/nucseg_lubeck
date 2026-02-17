@@ -123,14 +123,14 @@ def split_quadrants(vol: np.ndarray, SPLIT_SIZE: int) -> Dict[str, np.ndarray]:
     }
 
 
-def iter_img_mask_pairs(root="."):
+def iter_img_mask_pairs(root=".", label_extension=".seg.nrrd"):
     """
     Yield (img_path, mask_path, sample_id) for every *_img.tif that has a
-    matching *_masks.tif in 'root'.
+    matching *_label of type 'label_extension' in 'root'.
     """
     root = Path(root)
     for img_path in sorted(root.glob("*_img.tif")):
-        mask_path = img_path.with_name(img_path.name.replace("_img.tif", "_label.seg.nrrd")) #_label.tif
+        mask_path = img_path.with_name(img_path.name.replace("_img.tif", "_label" + label_extension))
         if mask_path.exists():
             sample_id = img_path.stem.replace("_img", "")  # e.g. 'roi01_id0062_t0018_Rohrle17_2'
             yield img_path, mask_path, sample_id
@@ -292,7 +292,7 @@ def export_xy_slices_subset(vol: np.ndarray, msk: np.ndarray, outdir: str | Path
 
 # ---------------------- Main ----------------------------------------------------------
 
-def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, TEST_QUADRANT, SPLIT_SIZE, CHANNEL_AXIS, Z_AXIS, MINI_DEBUG, MINI_TRAIN_ZS, MINI_TEST_ZS, CONNECTIVITY, MIN_MASKS_TRAIN, N_EPOCHS, LEARNING_RATE, WEIGHT_DECAY, BATCH_SIZE, MODEL_NAME, DO_3D, ANISOTROPY, CELLPROB_THRESHOLD, FLOW_THRESHOLD):
+def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, TEST_QUADRANT, SPLIT_SIZE, CHANNEL_AXIS, Z_AXIS, MINI_DEBUG, MINI_TRAIN_ZS, MINI_TEST_ZS, CONNECTIVITY, MIN_MASKS_TRAIN, N_EPOCHS, LEARNING_RATE, WEIGHT_DECAY, BATCH_SIZE, MODEL_NAME, INFER_3D, ANISOTROPY, CELLPROB_THRESHOLD, FLOW_THRESHOLD):
     np.random.seed(RNG_SEED)
     here = Path(".").resolve()
 
@@ -302,10 +302,10 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, TEST_QUADRANT, SP
     Path(TRAIN_DIR).mkdir(parents=True, exist_ok=True)
     Path(TEST_DIR).mkdir(parents=True, exist_ok=True)
 
-    print("\nScanning for *_img.tif / *_label.seg.nrrd pairs ...")
-    pairs = list(iter_img_mask_pairs(DATA_DIR))
+    print("\nScanning for *_img.tif / *_label"+LABEL_EXTENSION+" pairs ...")
+    pairs = list(iter_img_mask_pairs(DATA_DIR, LABEL_EXTENSION))
     if not pairs:
-        raise FileNotFoundError(f"No *_img.tif / *_label.seg.nrrd pairs found in {DATA_DIR}")
+        raise FileNotFoundError(f"No *_img.tif / *_label{LABEL_EXTENSION} pairs found in {DATA_DIR}")
 
     # Fresh dataset folder
     if Path(DATASET_DIR).exists():
@@ -417,7 +417,7 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, TEST_QUADRANT, SP
     for sample_id, test_img, test_msk in test_sets:
         masks_pred, flows, styles = eval_model.eval(
             x=test_img, channels=[0, 0],
-            do_3D=DO_3D, z_axis=0, channel_axis=None,
+            do_3D=INFER_3D, z_axis=0, channel_axis=None,
             anisotropy=ANISOTROPY,
             cellprob_threshold=CELLPROB_THRESHOLD, flow_threshold=FLOW_THRESHOLD
         )
@@ -445,33 +445,34 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, TEST_QUADRANT, SP
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a 3D cell segmentation model")
     # seed and dataset paths
-    parser.add_argument("--rng_seed",               type=int, default=0,         help="Random seed for reproducibility")
-    parser.add_argument("--dataset_dir",            type=str, default="dataset", help="Dataset destination")
+    parser.add_argument("--rng_seed",               type=int, default=0,           help="Random seed for reproducibility")
+    parser.add_argument("--dataset_dir",            type=str, default="dataset",   help="Dataset destination")
     parser.add_argument("--data_dir",               type=str, default="/projects/crunchie/Jan/Daten/Labeling_Hippo_dataset", help="Input 3D stacks")
-    # testing
-    parser.add_argument("--test_quadrant",          type=str, default="BR",      choices=["TL", "TR", "BL", "BR"], help="Quadrant to hold out for testing")
-    parser.add_argument("--split_size",             type=int, default=512,       help="Expected XY size for quadrant split (default 512 for 512x512 images)")
+    parser.add_argument("--label_extension",        type=str, default=".seg.nrrd", help="Extension for label files (default .seg.nrrd for Slicer segmentations)")
+    # quadrants
+    parser.add_argument("--test_quadrant",          type=str, default="BR",        choices=["TL", "TR", "BL", "BR"], help="Quadrant to hold out for testing")
+    parser.add_argument("--split_size",             type=int, default=512,         help="Expected XY size for quadrant split (default 512 for 512x512 images)")
     # geometry
-    parser.add_argument("--channel_axis",           type=int, default=None,      help="Channel axis if present (e.g., 0/1/2/3), or None if single-channel")
-    parser.add_argument("--z_axis",                 type=int, default=None,      help="Z axis if known (0/1/2), or None to auto-guess")
+    parser.add_argument("--channel_axis",           type=int, default=None,        help="Channel axis if present (e.g., 0/1/2/3), or None if single-channel")
+    parser.add_argument("--z_axis",                 type=int, default=None,        help="Z axis if known (0/1/2), or None to auto-guess")
     # debugging
-    parser.add_argument("--mini_debug",             action="store_true",         help="Export only a small subset of slices for quick debugging")
-    parser.add_argument("--mini_train_zs",          type=int, nargs=2,           default=(0, 3), help="Z range [z0, z1) for mini debug train export")
-    parser.add_argument("--mini_test_zs",           type=int, nargs=2,           default=(5, 8), help="Z range [z0, z1) for mini debug test export")
+    parser.add_argument("--mini_debug",             action="store_true",           help="Export only a small subset of slices for quick debugging")
+    parser.add_argument("--mini_train_zs",          type=int, nargs=2,             default=(0, 3), help="Z range [z0, z1) for mini debug train export")
+    parser.add_argument("--mini_test_zs",           type=int, nargs=2,             default=(5, 8), help="Z range [z0, z1) for mini debug test export")
     # training settings
-    parser.add_argument("--connectivity",           type=int,   default=2,       choices=[1, 2], help="Connectivity for instance labeling (1=4-connectivity, 2=8-connectivity)")
-    parser.add_argument("--min_masks_train",        type=int,   default=1,       help="Minimum number of instances in a training slice to keep it (default 1)")
-    parser.add_argument("--n_epochs",               type=int,   default=120,     help="Number of training epochs")
-    parser.add_argument("--learning_rate",          type=float, default=1e-5,    help="Learning rate for training")
-    parser.add_argument("--weight_decay",           type=float, default=0.1,     help="Weight decay for training")
-    parser.add_argument("--batch_size",             type=int,   default=1,       help="Batch size for training (effective; cellpose uses internal cropping)")
-    parser.add_argument("--diameter",               type=float, default=None,    help="Diameter for cellpose (None to let it estimate)")
+    parser.add_argument("--connectivity",           type=int,   default=2,         choices=[1, 2], help="Connectivity for instance labeling (1=4-connectivity, 2=8-connectivity)")
+    parser.add_argument("--min_masks_train",        type=int,   default=1,         help="Minimum number of instances in a training slice to keep it (default 1)")
+    parser.add_argument("--n_epochs",               type=int,   default=120,       help="Number of training epochs")
+    parser.add_argument("--learning_rate",          type=float, default=1e-5,      help="Learning rate for training")
+    parser.add_argument("--weight_decay",           type=float, default=0.1,       help="Weight decay for training")
+    parser.add_argument("--batch_size",             type=int,   default=1,         help="Batch size for training (effective; cellpose uses internal cropping)")
+    parser.add_argument("--diameter",               type=float, default=None,      help="Diameter for cellpose (None to let it estimate)")
     parser.add_argument("--model_name",             type=str,   default="my_3d_finetune", help="Name for the trained model")
     # inference settings
-    parser.add_argument("--do_3d",                  action="store_true",         help="Run 3D inference (default is 2D slice-by-slice)") 
-    parser.add_argument("--anisotropy",             type=float, default=1.0,     help="Anisotropy factor for 3D inference (Z spacing / XY spacing)")
-    parser.add_argument("--cellprob_threshold",     type=float, default=-6,      help="Cell probability threshold for 3D inference (lower to get more predictions early on)")
-    parser.add_argument("--flow_threshold",         type=float, default=0.4,     help="Flow threshold for 3D inference (lower to get more predictions early on)")
+    parser.add_argument("--infer_3d",               action="store_true",           help="Run 3D inference (default is 2D slice-by-slice)") 
+    parser.add_argument("--anisotropy",             type=float, default=1.0,       help="Anisotropy factor for 3D inference (Z spacing / XY spacing)")
+    parser.add_argument("--cellprob_threshold",     type=float, default=-6,        help="Cell probability threshold for 3D inference (lower to get more predictions early on)")
+    parser.add_argument("--flow_threshold",         type=float, default=0.4,       help="Flow threshold for 3D inference (lower to get more predictions early on)")
     args = parser.parse_args()
 
-    main(args.rng_seed, args.dataset_dir, f"{args.dataset_dir}/train", f"{args.dataset_dir}/test", args.data_dir, args.test_quadrant, args.split_size, args.channel_axis, args.z_axis, args.mini_debug, args.mini_train_zs, args.mini_test_zs, args.connectivity, args.min_masks_train, args.n_epochs, args.learning_rate, args.weight_decay, args.batch_size, args.model_name, args.do_3d, args.anisotropy, args.cellprob_threshold, args.flow_threshold)
+    main(args.rng_seed, args.dataset_dir, f"{args.dataset_dir}/train", f"{args.dataset_dir}/test", args.data_dir, args.label_extension, args.test_quadrant, args.split_size, args.channel_axis, args.z_axis, args.mini_debug, args.mini_train_zs, args.mini_test_zs, args.connectivity, args.min_masks_train, args.n_epochs, args.learning_rate, args.weight_decay, args.batch_size, args.model_name, args.infer_3d, args.anisotropy, args.cellprob_threshold, args.flow_threshold)
