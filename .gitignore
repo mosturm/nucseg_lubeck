@@ -5,6 +5,7 @@
 
 # Ignore all .tif files in the main (root) folder only
 /*.tif
+/*.nrrd
 
 # Ignore VScode
 .vscode

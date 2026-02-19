@@ -321,14 +321,31 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, 
         print(f"Loading volumes for {sample_id} ...")
         vol = tiff.imread(str(img_path))
         msk = np.permute_dims(nrrd.read(str(mask_path))[0],axes=(1,0,2)) #tiff.imread(str(mask_path))
+
+        print(sample_id, "raw mask unique (first 20):", np.unique(msk)[:20])
         msk[msk!=1] = 0     # set background to zero!!
+
+        print(sample_id, "after binarize unique:", np.unique(msk))
+        print(sample_id, "foreground voxels:", int((msk > 0).sum()))
+
 
         vol = ensure_zyx(vol, CHANNEL_AXIS, Z_AXIS, "image")
         msk = ensure_zyx(msk, CHANNEL_AXIS, Z_AXIS, "mask")
         assert vol.shape == msk.shape, f"[{sample_id}] shape mismatch: {vol.shape} vs {msk.shape}"
 
+        fg = int((msk > 0).sum())
+        if fg == 0:
+            print(f"[WARN] {sample_id}: mask has no foreground -> skipping this ROI")
+            continue
+
         img_quads = split_quadrants(vol, SPLIT_SIZE)
         msk_quads = split_quadrants(msk, SPLIT_SIZE)
+
+        for q in ["TL","TR","BL","BR"]:
+            fg = int((msk_quads[q] > 0).sum())
+            frac = fg / msk_quads[q].size
+            print(f"[{sample_id}] quadrant {q}: fg_voxels={fg}  frac={frac:.6f}")
+
 
         if TEST_QUADRANT not in img_quads:
             raise ValueError("TEST_QUADRANT must be in {'TL','TR','BL','BR'}")
@@ -371,7 +388,7 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, 
 
     # Load images/labels with Cellpose helper
     print("\nLoading training/test lists via cellpose.io.load_train_test_data ...")
-    images, labels, _, test_images, test_labels, _ = io.load_train_test_data(
+    images, labels, train_files, test_images, test_labels, test_files = io.load_train_test_data(
         str((here / TRAIN_DIR).resolve()),
         str((here / TEST_DIR).resolve()),
         image_filter="_img", mask_filter="_masks", look_one_level_down=False
@@ -389,6 +406,31 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, 
         )
     images, labels = [x[0] for x in tr], [x[1] for x in tr]
     print(f"Training samples kept: {len(images)}  |  Test samples kept: {len(test_images)}")
+
+    # --- debug / remove degenerate masks (prevents flow-gen crash) ---
+    MIN_FG_PIXELS = 2  # <=1 can crash; use 10+ if you want stricter quality filtering
+
+    bad = []
+    for i, lb in enumerate(labels):
+        a = np.asarray(lb)
+        fg = int((a > 0).sum())
+        if fg < MIN_FG_PIXELS:
+            bad.append((i, fg, a.shape, train_files[i]))
+
+    print(f"Found {len(bad)} degenerate training masks (fg < {MIN_FG_PIXELS})")
+    for item in bad[:20]:
+        print("BAD", item)
+
+    # optionally drop them immediately
+    if bad:
+        bad_idx = set(i for i, *_ in bad)
+        keep = [i for i in range(len(labels)) if i not in bad_idx]
+        images = [images[i] for i in keep]
+        labels = [labels[i] for i in keep]
+        train_files = [train_files[i] for i in keep]
+        print(f"After dropping degenerate masks: train={len(images)}")
+    # --- end block ---
+
 
     # GPU?
     use_gpu = core.use_gpu()

@@ -7,7 +7,7 @@ python -m pip install --upgrade pip setuptools wheel
 
 # 3) install a NumPy version < 2 and matching SciPy/Matplotlib
 #    (these versions are known good with Cellpose + PyTorch on Python 3.10)
-pip install "numpy<2" "scipy>=1.10,<1.13" "matplotlib<3.9" "pandas" "scikit-image" "plotly" "pyarrow"
+pip install "numpy<2" "scipy>=1.10,<1.13" "matplotlib<3.9" "pandas" "scikit-image" "plotly" "pyarrow" "pynrrd"
 
 # 4) install PyTorch
 #    GPU option (replace cu121 if your GPU needs a different one):
@@ -17,5 +17,7 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 # 5) install cellpose
 pip install "cellpose==4.0.6"
 
+
+python segment_nuc.py --split_size 256 --infer_3d --data_dir ./
 
 scp -pC /home/mo/Desktop/CellSegLubeck/*.tif   ubuntu@138.2.233.225:/home/ubuntu/cellseglubeck/

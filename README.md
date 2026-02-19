@@ -33,7 +33,7 @@ conda activate cellpose-clean
 python -m pip install --upgrade pip setuptools wheel
 
 # 3) install scientific stack (NumPy < 2, versions compatible with Cellpose + PyTorch) --> scipy created an error for me, so I didn't install it...
-pip install "numpy<2" "scipy>=1.10,<1.13" "matplotlib<3.9" "pandas" "scikit-image" "plotly" "pyarrow"
+pip install "numpy<2" "scipy>=1.10,<1.13" "matplotlib<3.9" "pandas" "scikit-image" "plotly" "pyarrow" "pynrrd"
 
 # 4) install PyTorch (GPU build; adjust CUDA version if needed) --> Url didn't work for me, so I just left that part out
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
