@@ -27,7 +27,7 @@ from PIL import Image
 import colorsys
 import argparse
 import nrrd
-
+import csv
 from cellpose import io, models, core, train
 
 # ---------------------- Utilities: connected components -------------------------------
@@ -219,6 +219,35 @@ def count_instances_2d(msk2d: np.ndarray, CONNECTIVITY: int) -> int:
         u = np.unique(msk2d)
         return int((u > 0).sum())
 
+def remove_small_instances_2d(inst_2d: np.ndarray, min_area: int = 2) -> np.ndarray:
+    """
+    Remove labeled instances smaller than min_area pixels and relabel compactly.
+    Works on instance masks where background=0 and objects are positive integers.
+    """
+    inst = np.asarray(inst_2d).astype(np.int32)
+    out = np.zeros_like(inst, dtype=np.int32)
+
+    kept_id = 1
+    for k in np.unique(inst):
+        if k == 0:
+            continue
+        area = int((inst == k).sum())
+        if area >= min_area:
+            out[inst == k] = kept_id
+            kept_id += 1
+    return out
+
+
+def sanitize_mask_2d(msk2d: np.ndarray, CONNECTIVITY: int, MIN_INSTANCE_PIXELS: int = 2) -> np.ndarray:
+    """
+    Full 2D mask sanitation pipeline:
+    1) convert binary masks to connected-component instances if needed
+    2) remove tiny instances
+    3) return compact int32 labels
+    """
+    inst = to_instances_2d(msk2d, CONNECTIVITY)
+    inst = remove_small_instances_2d(inst, min_area=MIN_INSTANCE_PIXELS)
+    return inst.astype(np.int32)
 
 def _label_to_rgb(inst_2d: np.ndarray) -> np.ndarray:
     """Color each instance >0 with a distinct (deterministic) color."""
@@ -233,18 +262,109 @@ def _label_to_rgb(inst_2d: np.ndarray) -> np.ndarray:
     return rgb
 
 
-def save_debug_masks(msk_raw_2d: np.ndarray, inst_2d: np.ndarray, outdir: str | Path, stem: str):
-    """Save (1) binary mask as fed to the code, (2) colored instances after CC."""
+def save_debug_masks(img_2d: np.ndarray, msk_raw_2d: np.ndarray, inst_2d: np.ndarray, outdir: str | Path, stem: str):
+    """
+    Save:
+      1) the raw image tile as grayscale PNG
+      2) binary mask as fed to the code
+      3) colored instances after connected components
+    """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+
+    # Raw image tile
+    img8 = normalize_to_uint8(img_2d)
+    Image.fromarray(img8).save(outdir / f"{stem}_imgTile.png")
+
     # Binary view of the raw mask
     bin8 = ((msk_raw_2d > 0).astype(np.uint8) * 255)
     Image.fromarray(bin8).save(outdir / f"{stem}_maskBinary.png")
+
     # Colored instances
     rgb = _label_to_rgb(inst_2d)
     Image.fromarray(rgb).save(outdir / f"{stem}_maskInstances.png")
 
+def binary_volume_metrics(pred_bin: np.ndarray, gt_bin: np.ndarray) -> dict:
+    tp = int(np.logical_and(pred_bin, gt_bin).sum())
+    fp = int(np.logical_and(pred_bin, ~gt_bin).sum())
+    fn = int(np.logical_and(~pred_bin, gt_bin).sum())
+    tn = int(np.logical_and(~pred_bin, ~gt_bin).sum())
 
+    iou = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0.0
+    dice = (2 * tp) / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else 0.0
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+
+    return {
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "tn": tn,
+        "iou": float(iou),
+        "dice": float(dice),
+        "precision": float(precision),
+        "recall": float(recall),
+        "specificity": float(specificity),
+        "pred_fg_voxels": int(pred_bin.sum()),
+        "gt_fg_voxels": int(gt_bin.sum()),
+    }
+
+def save_best_test_loss_model(
+    model_path: str | Path,
+    test_losses: np.ndarray,
+    n_epochs: int,
+    save_every: int = 5,
+    ) -> tuple[Path | None, int | None, float | None]:
+    """
+    Copy the checkpoint with the lowest computed test loss to:
+        <models>/best_model
+
+    IMPORTANT
+    ---------
+    - This assumes train.train_seg(..., save_each=True).
+    - Cellpose computes test loss only when:
+          iepoch == 5 or iepoch % 10 == 0
+    - With save_every=5, every evaluated epoch except the very first one
+      has a saved checkpoint file we can copy.
+    """
+    model_path = Path(model_path)
+    best_model_path = model_path.parent / "best_model"
+
+    candidates = []
+
+    for iepoch in range(n_epochs):
+        test_loss_was_computed = (iepoch == 5 or iepoch % 10 == 0)
+        if not test_loss_was_computed:
+            continue
+
+        # Map epoch -> checkpoint filename
+        if iepoch == n_epochs - 1:
+            ckpt = model_path
+        elif iepoch != 0 and iepoch % save_every == 0:
+            ckpt = model_path.parent / f"{model_path.name}_epoch_{iepoch:04d}"
+        else:
+            # no distinct checkpoint exists for this evaluated epoch
+            continue
+
+        if ckpt.exists():
+            candidates.append((float(test_losses[iepoch]), iepoch + 1, ckpt))
+
+    if not candidates:
+        print(
+            "[WARN] No checkpoint matching a computed test loss was found. "
+            "Could not create models/best_model."
+        )
+        return None, None, None
+
+    best_loss, best_epoch, best_ckpt = min(candidates, key=lambda x: x[0])
+
+    shutil.copy2(best_ckpt, best_model_path)
+
+    print(f"Best test-loss checkpoint: epoch={best_epoch}, test_loss={best_loss:.6f}")
+    print(f"Copied best checkpoint from {best_ckpt} -> {best_model_path}")
+
+    return best_model_path, best_epoch, best_loss
 # ---------------------- Exporters -----------------------------------------------------
 
 def export_xy_slices(vol: np.ndarray, msk: np.ndarray, outdir: str | Path, tag: str, CONNECTIVITY: int) -> int:
@@ -255,7 +375,7 @@ def export_xy_slices(vol: np.ndarray, msk: np.ndarray, outdir: str | Path, tag: 
     for z in range(vol.shape[0]):
         img2d = vol[z]
         raw2d = msk[z]
-        msk2d = to_instances_2d(raw2d, CONNECTIVITY)
+        msk2d = sanitize_mask_2d(raw2d, CONNECTIVITY, MIN_INSTANCE_PIXELS=2)
         stem = f"{tag}_z{z:03d}"
 
         # training files
@@ -263,7 +383,7 @@ def export_xy_slices(vol: np.ndarray, msk: np.ndarray, outdir: str | Path, tag: 
         tiff.imwrite(outdir / f"{stem}_masks.tif", msk2d.astype(np.int32))
 
         # visual verifiers
-        save_debug_masks(raw2d, msk2d, outdir / "viz", stem)
+        save_debug_masks(img2d, raw2d, msk2d, outdir / "viz", stem)
         kept += 1
     print(f"exported {kept} slices to {outdir}")
     return kept
@@ -278,13 +398,13 @@ def export_xy_slices_subset(vol: np.ndarray, msk: np.ndarray, outdir: str | Path
     for z in range(z0, min(z1, vol.shape[0])):
         img2d = vol[z]
         raw2d = msk[z]
-        msk2d = to_instances_2d(raw2d, CONNECTIVITY)
+        msk2d = sanitize_mask_2d(raw2d, CONNECTIVITY, MIN_INSTANCE_PIXELS=2)
         stem = f"{tag}_z{z:03d}"
         tiff.imwrite(outdir / f"{stem}_img.tif", img2d, photometric="minisblack")
         tiff.imwrite(outdir / f"{stem}_masks.tif", msk2d.astype(np.int32))
 
         # visual verifiers
-        save_debug_masks(raw2d, msk2d, outdir / "viz", stem)
+        save_debug_masks(img2d, raw2d, msk2d, outdir / "viz", stem)
         kept += 1
     print(f"[mini] exported {kept} slices z={z0}:{z1} to {outdir}")
     return kept
@@ -292,9 +412,10 @@ def export_xy_slices_subset(vol: np.ndarray, msk: np.ndarray, outdir: str | Path
 
 # ---------------------- Main ----------------------------------------------------------
 
-def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, TEST_QUADRANT, SPLIT_SIZE, CHANNEL_AXIS, Z_AXIS, MINI_DEBUG, MINI_TRAIN_ZS, MINI_TEST_ZS, CONNECTIVITY, MIN_MASKS_TRAIN, N_EPOCHS, LEARNING_RATE, WEIGHT_DECAY, BATCH_SIZE, MODEL_NAME, INFER_3D, ANISOTROPY, CELLPROB_THRESHOLD, FLOW_THRESHOLD):
+def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, TEST_QUADRANT, SPLIT_SIZE, CHANNEL_AXIS, Z_AXIS, MINI_DEBUG, MINI_TRAIN_ZS, MINI_TEST_ZS, CONNECTIVITY, MIN_MASKS_TRAIN, N_EPOCHS, LEARNING_RATE, WEIGHT_DECAY, BATCH_SIZE, MODEL_NAME, INFER_3D, ANISOTROPY, CELLPROB_THRESHOLD, FLOW_THRESHOLD, MASK_ID):
     np.random.seed(RNG_SEED)
     here = Path(".").resolve()
+    logger = io.logger_setup()
 
     # Fresh dataset folder
     if Path(DATASET_DIR).exists():
@@ -323,9 +444,11 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, 
         msk = np.permute_dims(nrrd.read(str(mask_path))[0],axes=(1,0,2)) #tiff.imread(str(mask_path))
 
         print(sample_id, "raw mask unique (first 20):", np.unique(msk)[:20])
-        msk[msk!=1] = 0     # set background to zero!!
 
-        print(sample_id, "after binarize unique:", np.unique(msk))
+        # keep only the requested segmentation id and convert it to a true binary mask {0,1}
+        msk = np.where(msk == MASK_ID, 1, 0).astype(msk.dtype)
+
+        print(sample_id, f"after selecting mask_id={MASK_ID} unique:", np.unique(msk))
         print(sample_id, "foreground voxels:", int((msk > 0).sum()))
 
 
@@ -394,6 +517,26 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, 
         image_filter="_img", mask_filter="_masks", look_one_level_down=False
     )
 
+    # Re-sanitize loaded masks to protect Cellpose flow generation,
+    # especially on held-out test slices where tiny border fragments may remain.
+    labels = [remove_small_instances_2d(np.asarray(lb).astype(np.int32), min_area=2) for lb in labels]
+    test_labels = [remove_small_instances_2d(np.asarray(lb).astype(np.int32), min_area=2) for lb in test_labels]
+
+    # Optional debug counts
+    bad_test = []
+    for i, lb in enumerate(test_labels):
+        u = np.unique(lb)
+        obj_ids = u[u > 0]
+        if len(obj_ids) > 0:
+            min_obj = min(int((lb == k).sum()) for k in obj_ids)
+            if min_obj < 2:
+                bad_test.append((i, test_files[i], min_obj))
+
+    print(f"After sanitizing loaded masks: train={len(labels)} test={len(test_labels)}")
+    print(f"Test masks still containing objects <2 px: {len(bad_test)}")
+    for item in bad_test[:20]:
+        print('BAD_TEST', item)
+
     # Filter training slices to those with >= MIN_MASKS_TRAIN instances
     def _count(msk2d):
         return count_instances_2d(msk2d, CONNECTIVITY)
@@ -429,6 +572,25 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, 
         labels = [labels[i] for i in keep]
         train_files = [train_files[i] for i in keep]
         print(f"After dropping degenerate masks: train={len(images)}")
+
+    bad_test_fg = []
+    for i, lb in enumerate(test_labels):
+        a = np.asarray(lb)
+        fg = int((a > 0).sum())
+        if fg < MIN_FG_PIXELS:
+            bad_test_fg.append((i, fg, a.shape, test_files[i]))
+
+    print(f"Found {len(bad_test_fg)} degenerate test masks (fg < {MIN_FG_PIXELS})")
+    for item in bad_test_fg[:20]:
+        print("BAD_TEST_FG", item)
+
+    if bad_test_fg:
+        bad_idx = set(i for i, *_ in bad_test_fg)
+        keep = [i for i in range(len(test_labels)) if i not in bad_idx]
+        test_images = [test_images[i] for i in keep]
+        test_labels = [test_labels[i] for i in keep]
+        test_files = [test_files[i] for i in keep]
+        print(f"After dropping degenerate test masks: test={len(test_images)}")
     # --- end block ---
 
 
@@ -440,48 +602,140 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, 
     print("Training...")
     model = models.CellposeModel(gpu=use_gpu)
 
-    print("Training... (This will take a while: 100 Epochs ~ 1 hour with two tif-pairs)")
-    print("I couldn't get the logger to actual print the epochs, so it will appear frozen, but it trains! (Maybe go for lunch)")
+    #print("Training... (This will take a while: 100 Epochs ~ 1 hour with two tif-pairs)")
+    #print("I couldn't get the logger to actual print the epochs, so it will appear frozen, but it trains! (Maybe go for lunch)")
+    SAVE_EVERY = 5
+
     model_path, train_losses, test_losses = train.train_seg(
         model.net,
         train_data=images, train_labels=labels,
         test_data=test_images, test_labels=test_labels,
         weight_decay=WEIGHT_DECAY, learning_rate=LEARNING_RATE,
         n_epochs=N_EPOCHS, model_name=MODEL_NAME,
-        min_train_masks=MIN_MASKS_TRAIN,   # <-- key change vs. default 5
-        batch_size=BATCH_SIZE
-    )
+        min_train_masks=MIN_MASKS_TRAIN,
+        batch_size=BATCH_SIZE,
+        save_path=str(here),
+        save_every=SAVE_EVERY,
+        save_each=True)
+
     print(f"Model saved to: {model_path}")
 
+    best_model_path, best_epoch, best_test_loss = save_best_test_loss_model(
+        model_path=model_path,
+        test_losses=np.asarray(test_losses, dtype=float),
+        n_epochs=N_EPOCHS,
+        save_every=SAVE_EVERY)
+
+    if best_model_path is not None:
+        print(f"Best model written to: {best_model_path}")
+        model_path_for_eval = str(best_model_path)
+    else:
+        print("[WARN] Falling back to final model for held-out inference.")
+        model_path_for_eval = str(model_path)
+    
+
+    loss_csv = Path(DATASET_DIR) / "losses_per_epoch.csv"
+    with open(loss_csv, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["epoch", "train_loss", "test_loss", "test_loss_was_computed"])
+        for ep in range(N_EPOCHS):
+            test_computed = (ep == 5 or ep % 10 == 0)
+            w.writerow([
+                ep + 1,
+                float(train_losses[ep]),
+                float(test_losses[ep]) if test_computed else "",
+                int(test_computed),
+            ])
+
+    print(f"Saved losses to {loss_csv}")
+
     print("\nRunning 3D inference on held-out quadrants for all samples...")
-    eval_model = models.CellposeModel(gpu=use_gpu, pretrained_model=model_path)
+
+    eval_model = models.CellposeModel(
+        gpu=use_gpu,
+        pretrained_model=model_path_for_eval
+    )
+
+    heldout_rows = []
 
     for sample_id, test_img, test_msk in test_sets:
         masks_pred, flows, styles = eval_model.eval(
-            x=test_img, channels=[0, 0],
-            do_3D=INFER_3D, z_axis=0, channel_axis=None,
+            x=test_img,
+            channels=[0, 0],
+            do_3D=INFER_3D,
+            z_axis=0,
+            channel_axis=None,
             anisotropy=ANISOTROPY,
-            cellprob_threshold=CELLPROB_THRESHOLD, flow_threshold=FLOW_THRESHOLD
+            cellprob_threshold=CELLPROB_THRESHOLD,
+            flow_threshold=FLOW_THRESHOLD
         )
 
-        # save predicted 3D mask as TIF
         out_tif = Path(DATASET_DIR) / f"pred_{sample_id}_{TEST_QUADRANT}_3d_mask.tif"
         tiff.imwrite(str(out_tif), masks_pred.astype(np.int32))
         print(f"[{sample_id}] saved 3D predicted mask: {out_tif}")
 
-        # quick voxel IoU (binary) for info
-        iou = 0.0
         pred_bin = (masks_pred > 0)
-        gt_bin   = (test_msk   > 0)
-        inter = np.logical_and(pred_bin, gt_bin).sum()
-        union = np.logical_or(pred_bin, gt_bin).sum()
-        if union > 0:
-            iou = float(inter) / float(union)
-        print(f"[{sample_id}] voxel IoU on held-out quadrant: {iou:.4f}")
+        gt_bin = (test_msk > 0)
 
-        # NEW: export PNG stacks (raw, mask-only RGBA, and overlay)
+        metrics = binary_volume_metrics(pred_bin, gt_bin)
+
+        print(f"[{sample_id}] voxel IoU on held-out quadrant: {metrics['iou']:.4f}")
+        print(f"[{sample_id}] voxel Dice on held-out quadrant: {metrics['dice']:.4f}")
+
+        heldout_rows.append({
+            "sample_id": sample_id,
+            "test_quadrant": TEST_QUADRANT,
+            "infer_3d": int(INFER_3D),
+            "anisotropy": float(ANISOTROPY),
+            "cellprob_threshold": float(CELLPROB_THRESHOLD),
+            "flow_threshold": float(FLOW_THRESHOLD),
+            **metrics,
+        })
+
         save_png_overlays(sample_id, test_img, masks_pred, out_root="png_eval")
         print(f"[{sample_id}] PNG overlays written to png_eval/{sample_id}/")
+
+    heldout_csv = Path(DATASET_DIR) / "heldout_metrics_per_sample.csv"
+
+    if heldout_rows:
+        with open(heldout_csv, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(heldout_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(heldout_rows)
+
+        print(f"Saved held-out per-sample metrics to {heldout_csv}")
+
+    summary_csv = Path(DATASET_DIR) / "heldout_metrics_summary.csv"
+
+    metric_names = [
+        "iou",
+        "dice",
+        "precision",
+        "recall",
+        "specificity",
+        "pred_fg_voxels",
+        "gt_fg_voxels",
+    ]
+
+    if heldout_rows:
+        with open(summary_csv, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["metric", "mean", "median", "std", "min", "max", "n"])
+
+            for name in metric_names:
+                vals = np.array([row[name] for row in heldout_rows], dtype=float)
+
+                writer.writerow([
+                    name,
+                    float(np.mean(vals)),
+                    float(np.median(vals)),
+                    float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0,
+                    float(np.min(vals)),
+                    float(np.max(vals)),
+                    int(len(vals)),
+                ])
+
+        print(f"Saved held-out summary metrics to {summary_csv}")
 
 
 if __name__ == "__main__":
@@ -491,6 +745,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_dir",            type=str, default="dataset",   help="Dataset destination")
     parser.add_argument("--data_dir",               type=str, default="/projects/crunchie/Jan/Daten/Labeling_Hippo_dataset", help="Input 3D stacks")
     parser.add_argument("--label_extension",        type=str, default=".seg.nrrd", help="Extension for label files (default .seg.nrrd for Slicer segmentations)")
+    parser.add_argument("--mask_id",                type=int, default=1,           help="Segmentation label id to keep as foreground; everything else becomes 0")
     # quadrants
     parser.add_argument("--test_quadrant",          type=str, default="BR",        choices=["TL", "TR", "BL", "BR"], help="Quadrant to hold out for testing")
     parser.add_argument("--split_size",             type=int, default=512,         help="Expected XY size for quadrant split (default 512 for 512x512 images)")
@@ -505,16 +760,16 @@ if __name__ == "__main__":
     parser.add_argument("--connectivity",           type=int,   default=2,         choices=[1, 2], help="Connectivity for instance labeling (1=4-connectivity, 2=8-connectivity)")
     parser.add_argument("--min_masks_train",        type=int,   default=1,         help="Minimum number of instances in a training slice to keep it (default 1)")
     parser.add_argument("--n_epochs",               type=int,   default=120,       help="Number of training epochs")
-    parser.add_argument("--learning_rate",          type=float, default=1e-5,      help="Learning rate for training")
-    parser.add_argument("--weight_decay",           type=float, default=0.1,       help="Weight decay for training")
+    parser.add_argument("--learning_rate",          type=float, default=3e-5,      help="Learning rate for training")
+    parser.add_argument("--weight_decay",           type=float, default=0.05,       help="Weight decay for training")
     parser.add_argument("--batch_size",             type=int,   default=1,         help="Batch size for training (effective; cellpose uses internal cropping)")
     parser.add_argument("--diameter",               type=float, default=None,      help="Diameter for cellpose (None to let it estimate)")
     parser.add_argument("--model_name",             type=str,   default="my_3d_finetune", help="Name for the trained model")
     # inference settings
     parser.add_argument("--infer_3d",               action="store_true",           help="Run 3D inference (default is 2D slice-by-slice)") 
     parser.add_argument("--anisotropy",             type=float, default=1.0,       help="Anisotropy factor for 3D inference (Z spacing / XY spacing)")
-    parser.add_argument("--cellprob_threshold",     type=float, default=-6,        help="Cell probability threshold for 3D inference (lower to get more predictions early on)")
-    parser.add_argument("--flow_threshold",         type=float, default=0.4,       help="Flow threshold for 3D inference (lower to get more predictions early on)")
+    parser.add_argument("--cellprob_threshold",     type=float, default=-1.75,        help="Cell probability threshold for 3D inference (lower to get more predictions early on)")
+    parser.add_argument("--flow_threshold",         type=float, default=0.2,       help="Flow threshold for 3D inference (lower to get more predictions early on)")
     args = parser.parse_args()
 
-    main(args.rng_seed, args.dataset_dir, f"{args.dataset_dir}/train", f"{args.dataset_dir}/test", args.data_dir, args.label_extension, args.test_quadrant, args.split_size, args.channel_axis, args.z_axis, args.mini_debug, args.mini_train_zs, args.mini_test_zs, args.connectivity, args.min_masks_train, args.n_epochs, args.learning_rate, args.weight_decay, args.batch_size, args.model_name, args.infer_3d, args.anisotropy, args.cellprob_threshold, args.flow_threshold)
+    main(args.rng_seed, args.dataset_dir, f"{args.dataset_dir}/train", f"{args.dataset_dir}/test", args.data_dir, args.label_extension, args.test_quadrant, args.split_size, args.channel_axis, args.z_axis, args.mini_debug, args.mini_train_zs, args.mini_test_zs, args.connectivity, args.min_masks_train, args.n_epochs, args.learning_rate, args.weight_decay, args.batch_size, args.model_name, args.infer_3d, args.anisotropy, args.cellprob_threshold, args.flow_threshold, args.mask_id)

@@ -12,6 +12,7 @@ pip install "numpy<2" "scipy>=1.10,<1.13" "matplotlib<3.9" "pandas" "scikit-imag
 # 4) install PyTorch
 #    GPU option (replace cu121 if your GPU needs a different one):
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
 
 # 5) install cellpose

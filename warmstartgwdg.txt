@@ -1,0 +1,122 @@
+
+/projects/scc/UGOE/UPFB/UPRP/scc_uprp_salditt/dir.project/nucseg
+
+srun --partition=scc-gpu -G 1 -c 8 --mem=32G --time=04:00:00 --pty bash
+
+source ~/envs/cellpose-clean/bin/activate
+nvidia-smi
+
+mkdir -p "$PROJECT_DIR/nucseg/runs/run1"
+cd "$PROJECT_DIR/nucseg/runs/run1"
+python -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucseg_lubeck/segment_nuc.py" --split_size 256 --infer_3d --data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Trainingsdaten | tee run.log
+
+scancel -u $USER
+
+#########cv############
+
+
+cd "$PROJECT_DIR/nucseg"
+python cv/scripts/make_stage1_manifest.py
+
+N=$(( $(wc -l < cv/manifests/stage1_manifest.csv) - 1 ))
+EXP_NAME="quadcv_stage1_loss_$(date +%Y%m%d_%H%M%S)"
+
+sbatch --array=0-"$((N-1))"%2 \
+  --export=ALL,EXP_NAME="$EXP_NAME" \
+  cv/jobs/cv_stage1_array.sbatch
+  
+squeue -u $USER -o "%.18i %.9P %.20j %.8u %.2t %.10M %.10l %.6D %R"
+
+python cv/scripts/aggregate_cv_results.py \
+  --results-root "$PROJECT_DIR/nucseg/cv/results/$EXP_NAME" \
+  --summary-dir "$PROJECT_DIR/nucseg/cv/summaries/$EXP_NAME"
+
+####sweep threshold#### 
+
+#new
+python -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucseg_lubeck/sweep_thresholds_segment_nuc.py" \
+  --data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Trainingsdaten \
+  --model_path /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/runs/run_best_cv/models/my_3d_finetune \
+  --split_size 256 \
+  --test_quadrant BR \
+  --infer_3d \
+  --cellprob_values -1.75 -2.0 -2.25 -2.5 -2.75 \
+  --min_size_values 15 \
+  --flow3D_smooth_values 0.5 1.0 1.5
+
+
+
+
+
+    --cellprob_values -6 -4 -2 0 2 \
+  --min_size_values 0 15 50 100 \
+  --flow3D_smooth_values 0 1 2 3
+
+#old
+
+
+python -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucseg_lubeck/sweep_thresholds_segment_nuc.py" \
+  --data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Trainingsdaten \
+  --model_path /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/runs/run1/models/my_3d_finetune \
+  --split_size 256 \
+  --test_quadrant BR \
+  --infer_3d \
+  --cellprob_values -1.75 -1.6 -1.5 -1.4 -1.25 \
+  --flow_values 0.2 0.3 0.4
+  --output_dir threshold_sweep \
+  | tee sweep.log
+
+
+  --cellprob_values -3 -2.5 -2 -1.5 -1 \
+  --flow_values 0.2 0.3 0.4 0.5 0.6 \
+  --cellprob_values -2 0 1 2 3 \
+  --flow_values 0.4 0.8 1.0 \
+  --cellprob_values -1.75 -1.6 -1.5 -1.4 -1.25 \
+  --flow_values 0.2 0.3 0.4
+
+################
+
+python segment_nuc.py --split_size 256 --infer_3d --data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Trainingsdaten --n_epochs 3
+
+PS C:\Users\Moritz_Sturm> scp -i "C:\Users\Moritz_Sturm\.ssh\id_ed25519_gwdg" "C:\Users\Moritz_Sturm\Downloads\Trainingsdaten.zip" u26421@glogin-gpu.hpc.gwdg.de:/projects/scc/UGOE/UPFB/UPRP/scc_uprp_salditt/dir.project/nucseg/data/
+
+
+
+good metrics: 
+Recent 3D nuclei/cell papers more often report:
+
+Dice / IoU
+AP / mAP
+instance F1 across IoU thresholds
+SEG / AJI / PQ
+
+Still, here are the closest true-test-set reference points I found.
+
+1) Efficient automatic 3D segmentation of cell nuclei for high-content screening (separate 27-image test set, 2,367 nuclei)
+
+On a separate test set, their proposed 3D method reported:
+
+Precision: 0.978
+Recall: 0.887
+F1-score: 0.929
+Jaccard / IoU: 0.826
+
+In the same benchmark, strong baselines were:
+
+3D-RSD: Precision 0.952, Recall 0.847, F1 0.894, JI 0.833
+LSetCelTrk: Precision 0.922, Recall 0.812, F1 0.858, JI 0.934
+QCANet: Precision 0.889, Recall 0.740, F1 0.801, JI 0.804
+
+
+
+orig_values: 
+
+    parser.add_argument("--learning_rate",          type=float, default=1e-5,      help="Learning rate for training")
+    parser.add_argument("--weight_decay",           type=float, default=0.1,       help="Weight decay for training")
+
+
+best values after cv:
+
+cellprob_threshold = -2.5
+min_size = 15
+flow3D_smooth = 1.5
