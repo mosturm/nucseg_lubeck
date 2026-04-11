@@ -8,10 +8,29 @@ nvidia-smi
 
 mkdir -p "$PROJECT_DIR/nucseg/runs/run1"
 cd "$PROJECT_DIR/nucseg/runs/run1"
-python -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucseg_lubeck/segment_nuc.py" --split_size 256 --infer_3d --data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Trainingsdaten | tee run.log
+
+
+##newcall
+python -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucseg_lubeck/segment_nuc.py" \
+  --infer_3d \
+  --data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Trainingsdaten \
+  --val_data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Valdaten\
+  | tee run.log
+
 
 scancel -u $USER
+###########inference######
 
+
+python  -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucseg_lubeck/test_infer.py" \
+  --model /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/runs/run_real_val/models/best_model \
+  --test_data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Testdaten \
+  --outdir inference_eval \
+  --label_extension .seg.nrrd \
+  --mask_id 1 \
+  --infer_3d
+
+/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/runs/run_cleaned_train/models/my_3d_finetune_epoch_0010
 #########cv############
 
 
@@ -33,7 +52,21 @@ python cv/scripts/aggregate_cv_results.py \
 
 ####sweep threshold#### 
 
-#new
+python -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucseg_lubeck/sweep_thresholds_segment_nuc.py" \
+  --data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Valdaten \
+  --model_path /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/runs/run_real_val/models/best_model \
+  --output_dir threshold_sweep_val \
+  --infer_3d \
+  --gt_foreground_mode label1 \
+  --gt_foreground_label 1 \
+  --min_size_values 15 \
+  --flow3D_smooth_values 0 \
+  --cellprob_values -0.5 -0.75 -1 -1.25 -1.5 \
+
+
+
+
+#old_params
 python -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucseg_lubeck/sweep_thresholds_segment_nuc.py" \
   --data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Trainingsdaten \
   --model_path /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/runs/run_best_cv/models/my_3d_finetune \
@@ -41,14 +74,15 @@ python -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucse
   --test_quadrant BR \
   --infer_3d \
   --cellprob_values -1.75 -2.0 -2.25 -2.5 -2.75 \
+  --cellprob_values -6 -4 -2 0 2
   --min_size_values 15 \
-  --flow3D_smooth_values 0.5 1.0 1.5
+  --flow3D_smooth_values 0 0.5 1.0 1.5
 
 
 
 
 
-    --cellprob_values -6 -4 -2 0 2 \
+  --cellprob_values -6 -4 -2 0 2 \
   --min_size_values 0 15 50 100 \
   --flow3D_smooth_values 0 1 2 3
 
@@ -120,3 +154,7 @@ best values after cv:
 cellprob_threshold = -2.5
 min_size = 15
 flow3D_smooth = 1.5
+
+oldcall
+
+python -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucseg_lubeck/segment_nuc.py" --split_size 256 --infer_3d --data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Trainingsdaten | tee run.log

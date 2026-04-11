@@ -412,7 +412,7 @@ def export_xy_slices_subset(vol: np.ndarray, msk: np.ndarray, outdir: str | Path
 
 # ---------------------- Main ----------------------------------------------------------
 
-def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, TEST_QUADRANT, SPLIT_SIZE, CHANNEL_AXIS, Z_AXIS, MINI_DEBUG, MINI_TRAIN_ZS, MINI_TEST_ZS, CONNECTIVITY, MIN_MASKS_TRAIN, N_EPOCHS, LEARNING_RATE, WEIGHT_DECAY, BATCH_SIZE, MODEL_NAME, INFER_3D, ANISOTROPY, CELLPROB_THRESHOLD, FLOW_THRESHOLD, MASK_ID):
+def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, VAL_DATA_DIR, LABEL_EXTENSION, TEST_QUADRANT, SPLIT_SIZE, CHANNEL_AXIS, Z_AXIS, MINI_DEBUG, MINI_TRAIN_ZS, MINI_TEST_ZS, CONNECTIVITY, MIN_MASKS_TRAIN, N_EPOCHS, LEARNING_RATE, WEIGHT_DECAY, BATCH_SIZE, MODEL_NAME, INFER_3D, ANISOTROPY, CELLPROB_THRESHOLD, FLOW_THRESHOLD, MASK_ID):
     np.random.seed(RNG_SEED)
     here = Path(".").resolve()
     logger = io.logger_setup()
@@ -423,10 +423,15 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, 
     Path(TRAIN_DIR).mkdir(parents=True, exist_ok=True)
     Path(TEST_DIR).mkdir(parents=True, exist_ok=True)
 
-    print("\nScanning for *_img.tif / *_label"+LABEL_EXTENSION+" pairs ...")
-    pairs = list(iter_img_mask_pairs(DATA_DIR, LABEL_EXTENSION))
-    if not pairs:
+    print("\nScanning training pairs ...")
+    train_pairs = list(iter_img_mask_pairs(DATA_DIR, LABEL_EXTENSION))
+    if not train_pairs:
         raise FileNotFoundError(f"No *_img.tif / *_label{LABEL_EXTENSION} pairs found in {DATA_DIR}")
+
+    print("\nScanning validation pairs ...")
+    val_pairs = list(iter_img_mask_pairs(VAL_DATA_DIR, LABEL_EXTENSION))
+    if not val_pairs:
+        raise FileNotFoundError(f"No *_img.tif / *_label{LABEL_EXTENSION} pairs found in {VAL_DATA_DIR}")
 
     # Fresh dataset folder
     if Path(DATASET_DIR).exists():
@@ -434,23 +439,22 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, 
     Path(TRAIN_DIR).mkdir(parents=True, exist_ok=True)
     Path(TEST_DIR).mkdir(parents=True, exist_ok=True)
 
-    # collect test quadrants for each sample for later 3D eval & PNG overlays
+    # collect validation ROIs for later 3D eval & PNG overlays
     test_sets = []
     total_train_slices = total_test_slices = 0
 
-    for img_path, mask_path, sample_id in pairs:
-        print(f"Loading volumes for {sample_id} ...")
+    # -------------------- export TRAIN ROIs (full volume, no quadrant split) --------------------
+    for img_path, mask_path, sample_id in train_pairs:
+        print(f"Loading TRAIN volume for {sample_id} ...")
         vol = tiff.imread(str(img_path))
-        msk = np.permute_dims(nrrd.read(str(mask_path))[0],axes=(1,0,2)) #tiff.imread(str(mask_path))
+        msk = np.permute_dims(nrrd.read(str(mask_path))[0], axes=(1, 0, 2))
 
         print(sample_id, "raw mask unique (first 20):", np.unique(msk)[:20])
 
-        # keep only the requested segmentation id and convert it to a true binary mask {0,1}
         msk = np.where(msk == MASK_ID, 1, 0).astype(msk.dtype)
 
         print(sample_id, f"after selecting mask_id={MASK_ID} unique:", np.unique(msk))
         print(sample_id, "foreground voxels:", int((msk > 0).sum()))
-
 
         vol = ensure_zyx(vol, CHANNEL_AXIS, Z_AXIS, "image")
         msk = ensure_zyx(msk, CHANNEL_AXIS, Z_AXIS, "mask")
@@ -458,47 +462,55 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, 
 
         fg = int((msk > 0).sum())
         if fg == 0:
-            print(f"[WARN] {sample_id}: mask has no foreground -> skipping this ROI")
+            print(f"[WARN] {sample_id}: mask has no foreground -> skipping this TRAIN ROI")
             continue
 
-        img_quads = split_quadrants(vol, SPLIT_SIZE)
-        msk_quads = split_quadrants(msk, SPLIT_SIZE)
-
-        for q in ["TL","TR","BL","BR"]:
-            fg = int((msk_quads[q] > 0).sum())
-            frac = fg / msk_quads[q].size
-            print(f"[{sample_id}] quadrant {q}: fg_voxels={fg}  frac={frac:.6f}")
-
-
-        if TEST_QUADRANT not in img_quads:
-            raise ValueError("TEST_QUADRANT must be in {'TL','TR','BL','BR'}")
-
-        test_img = img_quads[TEST_QUADRANT]
-        test_msk = msk_quads[TEST_QUADRANT]
-        train_quads = [q for q in ["TL","TR","BL","BR"] if q != TEST_QUADRANT]
-
-        print(f"Exporting XY slices for {sample_id} ...")
+        print(f"Exporting TRAIN XY slices for {sample_id} ...")
         if MINI_DEBUG:
             z0, z1 = MINI_TRAIN_ZS
-            for q in train_quads:
-                total_train_slices += export_xy_slices_subset(
-                    img_quads[q], msk_quads[q], TRAIN_DIR, f"{sample_id}_tile_{q}", z0, z1, CONNECTIVITY
-                )
-            z0t, z1t = MINI_TEST_ZS
-            total_test_slices += export_xy_slices_subset(
-                test_img, test_msk, TEST_DIR, f"{sample_id}_tile_{TEST_QUADRANT}", z0t, z1t, CONNECTIVITY
+            total_train_slices += export_xy_slices_subset(
+                vol, msk, TRAIN_DIR, sample_id, z0, z1, CONNECTIVITY
             )
         else:
-            for q in train_quads:
-                total_train_slices += export_xy_slices(
-                    img_quads[q], msk_quads[q], TRAIN_DIR, f"{sample_id}_tile_{q}", CONNECTIVITY
-                )
-            total_test_slices += export_xy_slices(
-                test_img, test_msk, TEST_DIR, f"{sample_id}_tile_{TEST_QUADRANT}", CONNECTIVITY
+            total_train_slices += export_xy_slices(
+                vol, msk, TRAIN_DIR, sample_id, CONNECTIVITY
             )
 
-        # keep for eval/overlays later
-        test_sets.append((sample_id, test_img, test_msk))
+    # -------------------- export VAL ROIs (full volume, no quadrant split) --------------------
+    for img_path, mask_path, sample_id in val_pairs:
+        print(f"Loading VAL volume for {sample_id} ...")
+        vol = tiff.imread(str(img_path))
+        msk = np.permute_dims(nrrd.read(str(mask_path))[0], axes=(1, 0, 2))
+
+        print(sample_id, "raw mask unique (first 20):", np.unique(msk)[:20])
+
+        msk = np.where(msk == MASK_ID, 1, 0).astype(msk.dtype)
+
+        print(sample_id, f"after selecting mask_id={MASK_ID} unique:", np.unique(msk))
+        print(sample_id, "foreground voxels:", int((msk > 0).sum()))
+
+        vol = ensure_zyx(vol, CHANNEL_AXIS, Z_AXIS, "image")
+        msk = ensure_zyx(msk, CHANNEL_AXIS, Z_AXIS, "mask")
+        assert vol.shape == msk.shape, f"[{sample_id}] shape mismatch: {vol.shape} vs {msk.shape}"
+
+        fg = int((msk > 0).sum())
+        if fg == 0:
+            print(f"[WARN] {sample_id}: mask has no foreground -> skipping this VAL ROI")
+            continue
+
+        print(f"Exporting VAL XY slices for {sample_id} ...")
+        if MINI_DEBUG:
+            z0t, z1t = MINI_TEST_ZS
+            total_test_slices += export_xy_slices_subset(
+                vol, msk, TEST_DIR, sample_id, z0t, z1t, CONNECTIVITY
+            )
+        else:
+            total_test_slices += export_xy_slices(
+                vol, msk, TEST_DIR, sample_id, CONNECTIVITY
+            )
+
+        # keep full validation ROI for 3D eval/overlays later
+        test_sets.append((sample_id, vol, msk))
 
     print(f"Total slices: train={total_train_slices}, test={total_test_slices}")
     # Quick sanity on instance labels
@@ -541,13 +553,16 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, 
     def _count(msk2d):
         return count_instances_2d(msk2d, CONNECTIVITY)
 
-    tr = [(im, lb) for im, lb in zip(images, labels) if _count(lb) >= MIN_MASKS_TRAIN]
+    tr = [(im, lb, tf) for im, lb, tf in zip(images, labels, train_files) if _count(lb) >= MIN_MASKS_TRAIN]
     if len(tr) == 0:
         raise RuntimeError(
             "After converting to instance masks, no training slices have "
             f">= {MIN_MASKS_TRAIN} objects. Check your labels or lower MIN_MASKS_TRAIN."
         )
-    images, labels = [x[0] for x in tr], [x[1] for x in tr]
+
+    images      = [x[0] for x in tr]
+    labels      = [x[1] for x in tr]
+    train_files = [x[2] for x in tr]
     print(f"Training samples kept: {len(images)}  |  Test samples kept: {len(test_images)}")
 
     # --- debug / remove degenerate masks (prevents flow-gen crash) ---
@@ -593,6 +608,11 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, 
         print(f"After dropping degenerate test masks: test={len(test_images)}")
     # --- end block ---
 
+    if len(images) == 0:
+        raise RuntimeError("No training slices remain after filtering.")
+
+    if len(test_images) == 0:
+        raise RuntimeError("No validation slices remain after filtering.")
 
     # GPU?
     use_gpu = core.use_gpu()
@@ -649,7 +669,7 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, 
 
     print(f"Saved losses to {loss_csv}")
 
-    print("\nRunning 3D inference on held-out quadrants for all samples...")
+    print("\nRunning 3D inference on validation ROIs for all samples...")
 
     eval_model = models.CellposeModel(
         gpu=use_gpu,
@@ -670,7 +690,7 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, 
             flow_threshold=FLOW_THRESHOLD
         )
 
-        out_tif = Path(DATASET_DIR) / f"pred_{sample_id}_{TEST_QUADRANT}_3d_mask.tif"
+        out_tif = Path(DATASET_DIR) / f"pred_{sample_id}_3d_mask.tif"
         tiff.imwrite(str(out_tif), masks_pred.astype(np.int32))
         print(f"[{sample_id}] saved 3D predicted mask: {out_tif}")
 
@@ -679,12 +699,12 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, LABEL_EXTENSION, 
 
         metrics = binary_volume_metrics(pred_bin, gt_bin)
 
-        print(f"[{sample_id}] voxel IoU on held-out quadrant: {metrics['iou']:.4f}")
-        print(f"[{sample_id}] voxel Dice on held-out quadrant: {metrics['dice']:.4f}")
+        print(f"[{sample_id}] voxel IoU on validation ROI: {metrics['iou']:.4f}")
+        print(f"[{sample_id}] voxel Dice on validation ROI: {metrics['dice']:.4f}")
 
         heldout_rows.append({
             "sample_id": sample_id,
-            "test_quadrant": TEST_QUADRANT,
+            "eval_split": "val_data_dir",
             "infer_3d": int(INFER_3D),
             "anisotropy": float(ANISOTROPY),
             "cellprob_threshold": float(CELLPROB_THRESHOLD),
@@ -744,6 +764,7 @@ if __name__ == "__main__":
     parser.add_argument("--rng_seed",               type=int, default=0,           help="Random seed for reproducibility")
     parser.add_argument("--dataset_dir",            type=str, default="dataset",   help="Dataset destination")
     parser.add_argument("--data_dir",               type=str, default="/projects/crunchie/Jan/Daten/Labeling_Hippo_dataset", help="Input 3D stacks")
+    parser.add_argument("--val_data_dir",           type=str, required=True, help="Input 3D stacks used only for validation/test_loss and held-out evaluation")
     parser.add_argument("--label_extension",        type=str, default=".seg.nrrd", help="Extension for label files (default .seg.nrrd for Slicer segmentations)")
     parser.add_argument("--mask_id",                type=int, default=1,           help="Segmentation label id to keep as foreground; everything else becomes 0")
     # quadrants
@@ -772,4 +793,4 @@ if __name__ == "__main__":
     parser.add_argument("--flow_threshold",         type=float, default=0.2,       help="Flow threshold for 3D inference (lower to get more predictions early on)")
     args = parser.parse_args()
 
-    main(args.rng_seed, args.dataset_dir, f"{args.dataset_dir}/train", f"{args.dataset_dir}/test", args.data_dir, args.label_extension, args.test_quadrant, args.split_size, args.channel_axis, args.z_axis, args.mini_debug, args.mini_train_zs, args.mini_test_zs, args.connectivity, args.min_masks_train, args.n_epochs, args.learning_rate, args.weight_decay, args.batch_size, args.model_name, args.infer_3d, args.anisotropy, args.cellprob_threshold, args.flow_threshold, args.mask_id)
+    main(args.rng_seed, args.dataset_dir, f"{args.dataset_dir}/train", f"{args.dataset_dir}/test", args.data_dir, args.val_data_dir, args.label_extension, args.test_quadrant, args.split_size, args.channel_axis, args.z_axis, args.mini_debug, args.mini_train_zs, args.mini_test_zs, args.connectivity, args.min_masks_train, args.n_epochs, args.learning_rate, args.weight_decay, args.batch_size, args.model_name, args.infer_3d, args.anisotropy, args.cellprob_threshold, args.flow_threshold, args.mask_id)

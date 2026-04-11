@@ -314,8 +314,6 @@ def tagify_value(v: Any) -> str:
 def load_test_sets(
     data_dir: Path,
     label_extension: str,
-    test_quadrant: str,
-    split_size: int,
     channel_axis: int | None,
     z_axis: int | None,
     gt_foreground_mode: str,
@@ -351,20 +349,7 @@ def load_test_sets(
             print(f"[WARN] {sample_id}: mask has no foreground -> skipping this ROI")
             continue
 
-        img_quads = split_quadrants(vol, split_size)
-        gt_bin_quads = split_quadrants(gt_bin.astype(np.uint8), split_size)
-
-        for q in ["TL", "TR", "BL", "BR"]:
-            qfg = int((gt_bin_quads[q] > 0).sum())
-            frac = qfg / gt_bin_quads[q].size
-            print(f"[{sample_id}] quadrant {q}: fg_voxels={qfg} frac={frac:.6f}")
-
-        if test_quadrant not in img_quads:
-            raise ValueError("test_quadrant must be in {'TL','TR','BL','BR'}")
-
-        test_img = img_quads[test_quadrant]
-        test_gt_bin = gt_bin_quads[test_quadrant].astype(bool)
-        test_sets.append((sample_id, test_img, test_gt_bin))
+        test_sets.append((sample_id, vol, gt_bin.astype(bool)))
 
     if not test_sets:
         raise RuntimeError("No usable test sets were constructed.")
@@ -595,8 +580,6 @@ def main() -> None:
     test_sets = load_test_sets(
         data_dir=data_dir,
         label_extension=args.label_extension,
-        test_quadrant=args.test_quadrant,
-        split_size=args.split_size,
         channel_axis=args.channel_axis,
         z_axis=args.z_axis,
         gt_foreground_mode=args.gt_foreground_mode,
@@ -674,7 +657,7 @@ def main() -> None:
 
             row = {
                 "sample_id": sample_id,
-                "test_quadrant": args.test_quadrant,
+                "eval_split": "full_val_roi",
                 "infer_3d": int(args.infer_3d),
                 "anisotropy": float(args.anisotropy),
                 "cellprob_threshold": float(cellprob_threshold),
@@ -721,7 +704,7 @@ def main() -> None:
             if args.save_pred_tifs:
                 pred_dir = output_dir / "predictions" / tag
                 pred_dir.mkdir(parents=True, exist_ok=True)
-                out_tif = pred_dir / f"pred_{sample_id}_{args.test_quadrant}_3d_mask.tif"
+                out_tif = pred_dir / f"pred_{sample_id}_3d_mask.tif"
                 tiff.imwrite(str(out_tif), masks_pred.astype(np.int32))
 
             if args.save_png_overlays:
@@ -781,7 +764,7 @@ def main() -> None:
         f"model_path: {model_path}",
         f"data_dir: {data_dir}",
         f"output_dir: {output_dir}",
-        f"test_quadrant: {args.test_quadrant}",
+        "evaluation: full validation ROIs",
         f"infer_3d: {int(args.infer_3d)}",
         f"anisotropy: {args.anisotropy}",
         f"gt_foreground_mode: {args.gt_foreground_mode}",
