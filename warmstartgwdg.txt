@@ -15,6 +15,7 @@ python -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucse
   --infer_3d \
   --data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Trainingsdaten \
   --val_data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Valdaten\
+  --mask_id 2\
   | tee run.log
 
 
@@ -23,14 +24,34 @@ scancel -u $USER
 
 
 python  -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucseg_lubeck/test_infer.py" \
-  --model /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/runs/run_real_val/models/best_model \
+  --model /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/runs/run_blood/models/best_model \
   --test_data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Testdaten \
   --outdir inference_eval \
   --label_extension .seg.nrrd \
-  --mask_id 1 \
+  --cellprob_threshold -6 \
+  --mask_id 2 \
   --infer_3d
 
 /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/runs/run_cleaned_train/models/my_3d_finetune_epoch_0010
+
+
+
+
+dual_inference
+
+python -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucseg_lubeck/infer_combined.py" \
+  --model1 /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/runs/run_real_val/models/best_model \
+  --mask_id1 1 \
+  --cellprob_threshold1 -1.25 \
+  --model2 /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/runs/run_blood/models/my_3d_finetune \
+  --mask_id2 2 \
+  --cellprob_threshold2 -6 \
+  --test_data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Testdaten \
+  --outdir dual_eval \
+  --label_extension .seg.nrrd \
+  --infer_3d \
+  --anisotropy 1.0 \
+
 #########cv############
 
 
@@ -54,11 +75,16 @@ python cv/scripts/aggregate_cv_results.py \
 
 python -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucseg_lubeck/sweep_thresholds_segment_nuc.py" \
   --data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Valdaten \
-  --model_path /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/runs/run_real_val/models/best_model \
+  --model_path /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/runs/run_blood/models/my_3d_finetune \
   --output_dir threshold_sweep_val \
   --infer_3d \
   --gt_foreground_mode label1 \
-  --gt_foreground_label 1 \
+  --gt_foreground_label 2 \
+  --cellprob_values -6 -4 -2 0 2 \
+  --min_size_values 0 15 50 100 \
+  --flow3D_smooth_values 0
+
+
   --min_size_values 15 \
   --flow3D_smooth_values 0 \
   --cellprob_values -0.5 -0.75 -1 -1.25 -1.5 \
@@ -71,6 +97,7 @@ python -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucse
   --data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Trainingsdaten \
   --model_path /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/runs/run_best_cv/models/my_3d_finetune \
   --split_size 256 \
+
   --test_quadrant BR \
   --infer_3d \
   --cellprob_values -1.75 -2.0 -2.25 -2.5 -2.75 \
@@ -149,6 +176,15 @@ orig_values:
     parser.add_argument("--weight_decay",           type=float, default=0.1,       help="Weight decay for training")
 
 
+
+
+    parser.add_argument(
+        "--cellprob_threshold",
+        type=float,
+        default=-1.25,
+        help="Cell probability threshold",
+    )
+
 best values after cv:
 
 cellprob_threshold = -2.5
@@ -158,3 +194,13 @@ flow3D_smooth = 1.5
 oldcall
 
 python -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucseg_lubeck/segment_nuc.py" --split_size 256 --infer_3d --data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Trainingsdaten | tee run.log
+
+
+gt_foreground_mode: label1
+gt_foreground_label: 2
+
+Best setting by original core ranking (Dice, then IoU, then abs fg error):
+cellprob_threshold: -6.0
+flow_threshold: -999.0  (-999 means not used / 3D mode)
+min_size: 50
+flow3D_smooth_scalar: 0.0
