@@ -82,11 +82,9 @@ def ensure_zyx(arr: np.ndarray, channel_axis: int | None, z_axis: int | None, na
 
     sizes = a.shape
     z_guess = int(np.argmin(sizes))
-    other = [sizes[i] for i in range(3) if i != z_guess]
 
-    if sizes[z_guess] * 2 <= min(other):
-        if z_guess != 0:
-            a = np.moveaxis(a, z_guess, 0)
+    if z_guess != 0:
+        a = np.moveaxis(a, z_guess, 0)
 
     return a
 
@@ -564,7 +562,7 @@ def main() -> None:
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    io.logger_setup()
+    io.logger_setup(cp_path=str((output_dir / ".cellpose").resolve()))
     use_gpu = core.use_gpu()
     print(f"GPU available: {use_gpu}")
 

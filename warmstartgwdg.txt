@@ -3,7 +3,10 @@
 
 srun --partition=scc-gpu -G 1 -c 8 --mem=32G --time=04:00:00 --pty bash
 
-source ~/envs/cellpose-clean/bin/activate
+module load gcc/13.2.0
+module load python/3.11.9
+source /mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/envs/cellpose-clean/bin/activate
+
 nvidia-smi
 
 mkdir -p "$PROJECT_DIR/nucseg/runs/run1"
@@ -11,11 +14,11 @@ cd "$PROJECT_DIR/nucseg/runs/run1"
 
 
 ##newcall
-python -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucseg_lubeck/segment_nuc.py" \
+python -u "/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/repo/nucseg_lubeck/segment_nuc.py" \
   --infer_3d \
-  --data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Trainingsdaten \
-  --val_data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Valdaten\
-  --mask_id 2\
+  --data_dir  /mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/data_vessel_only/split_seed46/combined/Trainingsdaten \
+  --val_data_dir /mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/data_vessel_only/split_seed46/combined/Valdaten \
+  --mask_id 1 \
   | tee run.log
 
 
@@ -23,13 +26,13 @@ scancel -u $USER
 ###########inference######
 
 
-python  -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucseg_lubeck/test_infer.py" \
-  --model /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/runs/run_blood/models/best_model \
-  --test_data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Testdaten \
-  --outdir inference_eval \
+python  -u "/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/repo/nucseg_lubeck/test_infer.py" \
+  --model /mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/runs/run_vessel_seg2/models/my_3d_finetune \
+  --test_data_dir /mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/data_vessel_only/split_seed46/combined/Testdaten \
+  --outdir /mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/runs/run_vessel_seg2/inference_eval \
   --label_extension .seg.nrrd \
   --cellprob_threshold -6 \
-  --mask_id 2 \
+  --mask_id 1 \
   --infer_3d
 
 /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/runs/run_cleaned_train/models/my_3d_finetune_epoch_0010
@@ -73,13 +76,13 @@ python cv/scripts/aggregate_cv_results.py \
 
 ####sweep threshold#### 
 
-python -u "/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucseg_lubeck/sweep_thresholds_segment_nuc.py" \
-  --data_dir /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data/Valdaten \
-  --model_path /user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/runs/run_blood/models/my_3d_finetune \
-  --output_dir threshold_sweep_val \
+python -u "/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/repo/nucseg_lubeck/sweep_thresholds_segment_nuc.py" \
+  --data_dir /mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/data_vessel_only/split_seed46/combined/Valdaten \
+  --model_path /mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/runs/run_vessel_seg2/models/my_3d_finetune \
+  --output_dir  /mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/runs/run_vessel_seg2/threshold_sweep_val \
   --infer_3d \
   --gt_foreground_mode label1 \
-  --gt_foreground_label 2 \
+  --gt_foreground_label 1 \
   --cellprob_values -6 -4 -2 0 2 \
   --min_size_values 0 15 50 100 \
   --flow3D_smooth_values 0
@@ -204,3 +207,18 @@ cellprob_threshold: -6.0
 flow_threshold: -999.0  (-999 means not used / 3D mode)
 min_size: 50
 flow3D_smooth_scalar: 0.0
+
+
+
+
+
+
+submit slurm cv: 
+
+cd /mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/repo/nucseg_lubeck
+
+sed -i 's/\r$//' run_cell_cv5.slurm
+bash -n run_cell_cv5.slurm
+sbatch run_cell_cv5.slurm
+
+ squeue -j 15078302

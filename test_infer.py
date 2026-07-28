@@ -88,9 +88,9 @@ def ensure_zyx(arr: np.ndarray, channel_axis: int | None, z_axis: int | None, na
 
     sizes = a.shape
     z_guess = int(np.argmin(sizes))
-    if sizes[z_guess] * 2 <= min(sizes[(z_guess + 1) % 3], sizes[(z_guess + 2) % 3]):
-        if z_guess != 0:
-            a = np.moveaxis(a, z_guess, 0)
+
+    if z_guess != 0:
+        a = np.moveaxis(a, z_guess, 0)
 
     return a
 
@@ -384,6 +384,7 @@ def run_one_sample(
         anisotropy=args.anisotropy,
         cellprob_threshold=args.cellprob_threshold,
         flow_threshold=args.flow_threshold,
+        min_size=args.min_size,
     )
 
     pred_labels = np.asarray(pred_labels).astype(np.int32)
@@ -574,6 +575,7 @@ def main(args: argparse.Namespace) -> None:
         "anisotropy": float(args.anisotropy),
         "cellprob_threshold": float(args.cellprob_threshold),
         "flow_threshold": float(args.flow_threshold),
+        "min_size": int(args.min_size),
         "n_pairs_found": int(len(pairs)),
         "n_success": int(len(rows)),
         "n_failed": int(len(failed_samples)),
@@ -667,6 +669,12 @@ if __name__ == "__main__":
         type=float,
         default=0.2,
         help="Flow threshold",
+    )
+    parser.add_argument(
+        "--min_size",
+        type=int,
+        default=15,
+        help="Minimum predicted object size in pixels/voxels",
     )
 
     args = parser.parse_args()

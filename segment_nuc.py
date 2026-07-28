@@ -95,17 +95,11 @@ def ensure_zyx(arr: np.ndarray, CHANNEL_AXIS: int, Z_AXIS: int, name: str = "arr
             a = np.moveaxis(a, Z_AXIS, 0)
         return a
 
-    # Auto guess: pick the axis with the smallest size as Z when it is
-    # meaningfully smaller than the other two (typical for volumes).
+    # Auto guess: always use the smallest axis as Z.
     sizes = a.shape
     z_guess = int(np.argmin(sizes))
-    # If the smallest is still comparable, default to axis 0.
-    if sizes[z_guess] * 2 <= min(sizes[(z_guess + 1) % 3], sizes[(z_guess + 2) % 3]):
-        if z_guess != 0:
-            a = np.moveaxis(a, z_guess, 0)
-    else:
-        # assume current axis 0 is Z
-        pass
+    if z_guess != 0:
+        a = np.moveaxis(a, z_guess, 0)
 
     return a
 
@@ -412,10 +406,10 @@ def export_xy_slices_subset(vol: np.ndarray, msk: np.ndarray, outdir: str | Path
 
 # ---------------------- Main ----------------------------------------------------------
 
-def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, VAL_DATA_DIR, LABEL_EXTENSION, TEST_QUADRANT, SPLIT_SIZE, CHANNEL_AXIS, Z_AXIS, MINI_DEBUG, MINI_TRAIN_ZS, MINI_TEST_ZS, CONNECTIVITY, MIN_MASKS_TRAIN, N_EPOCHS, LEARNING_RATE, WEIGHT_DECAY, BATCH_SIZE, MODEL_NAME, INFER_3D, ANISOTROPY, CELLPROB_THRESHOLD, FLOW_THRESHOLD, MASK_ID):
+def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, VAL_DATA_DIR, LABEL_EXTENSION, TEST_QUADRANT, SPLIT_SIZE, CHANNEL_AXIS, Z_AXIS, MINI_DEBUG, MINI_TRAIN_ZS, MINI_TEST_ZS, CONNECTIVITY, MIN_MASKS_TRAIN, N_EPOCHS, LEARNING_RATE, WEIGHT_DECAY, BATCH_SIZE, MODEL_NAME, PRETRAINED_MODEL, INFER_3D, ANISOTROPY, CELLPROB_THRESHOLD, FLOW_THRESHOLD, MASK_ID):
     np.random.seed(RNG_SEED)
     here = Path(".").resolve()
-    logger = io.logger_setup()
+    logger = io.logger_setup(cp_path=str((here / ".cellpose").resolve()))
 
     # Fresh dataset folder
     if Path(DATASET_DIR).exists():
@@ -620,7 +614,20 @@ def main(RNG_SEED, DATASET_DIR, TRAIN_DIR, TEST_DIR, DATA_DIR, VAL_DATA_DIR, LAB
 
     # Train Cellpose model
     print("Training...")
-    model = models.CellposeModel(gpu=use_gpu)
+    if PRETRAINED_MODEL is not None:
+        pretrained_path = Path(PRETRAINED_MODEL).resolve()
+        if not pretrained_path.is_file():
+            raise FileNotFoundError(
+                f"Pretrained model not found: {pretrained_path}"
+            )
+        print(f"Fine-tuning pretrained model: {pretrained_path}")
+        model = models.CellposeModel(
+            gpu=use_gpu,
+            pretrained_model=str(pretrained_path),
+        )
+    else:
+        print("Training from the default Cellpose model")
+        model = models.CellposeModel(gpu=use_gpu)
 
     #print("Training... (This will take a while: 100 Epochs ~ 1 hour with two tif-pairs)")
     #print("I couldn't get the logger to actual print the epochs, so it will appear frozen, but it trains! (Maybe go for lunch)")
@@ -786,6 +793,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size",             type=int,   default=1,         help="Batch size for training (effective; cellpose uses internal cropping)")
     parser.add_argument("--diameter",               type=float, default=None,      help="Diameter for cellpose (None to let it estimate)")
     parser.add_argument("--model_name",             type=str,   default="my_3d_finetune", help="Name for the trained model")
+    parser.add_argument("--pretrained_model",        type=str,   default=None,      help="Checkpoint to fine-tune; omit to start from the default Cellpose model")
     # inference settings
     parser.add_argument("--infer_3d",               action="store_true",           help="Run 3D inference (default is 2D slice-by-slice)") 
     parser.add_argument("--anisotropy",             type=float, default=1.0,       help="Anisotropy factor for 3D inference (Z spacing / XY spacing)")
@@ -793,4 +801,4 @@ if __name__ == "__main__":
     parser.add_argument("--flow_threshold",         type=float, default=0.2,       help="Flow threshold for 3D inference (lower to get more predictions early on)")
     args = parser.parse_args()
 
-    main(args.rng_seed, args.dataset_dir, f"{args.dataset_dir}/train", f"{args.dataset_dir}/test", args.data_dir, args.val_data_dir, args.label_extension, args.test_quadrant, args.split_size, args.channel_axis, args.z_axis, args.mini_debug, args.mini_train_zs, args.mini_test_zs, args.connectivity, args.min_masks_train, args.n_epochs, args.learning_rate, args.weight_decay, args.batch_size, args.model_name, args.infer_3d, args.anisotropy, args.cellprob_threshold, args.flow_threshold, args.mask_id)
+    main(args.rng_seed, args.dataset_dir, f"{args.dataset_dir}/train", f"{args.dataset_dir}/test", args.data_dir, args.val_data_dir, args.label_extension, args.test_quadrant, args.split_size, args.channel_axis, args.z_axis, args.mini_debug, args.mini_train_zs, args.mini_test_zs, args.connectivity, args.min_masks_train, args.n_epochs, args.learning_rate, args.weight_decay, args.batch_size, args.model_name, args.pretrained_model, args.infer_3d, args.anisotropy, args.cellprob_threshold, args.flow_threshold, args.mask_id)
