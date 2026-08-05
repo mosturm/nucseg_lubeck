@@ -254,3 +254,395 @@ You only need to version-control:
 - Maybe a config file if you add one.
 
 All raw TIFF data and training outputs stay local and are ignored by git.
+
+---
+
+## Cell Model: Five-Fold CV to Large-Volume Inference
+
+This section records the current cell-segmentation workflow in the required
+execution order. Cluster paths below use the current GWDG project mount:
+
+```text
+/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg
+```
+
+The SLURM scripts are expected in:
+
+```text
+/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/repo/nucseg_lubeck/slurmscripts
+```
+
+### 1. Starting data and five-fold split
+
+The prepared cell dataset contains 13 image/label pairs distributed across:
+
+```text
+data_cell_only/Trainingsdaten/
+data_cell_only/Valdaten/
+data_cell_only/Testdaten/
+```
+
+Each pair uses this naming convention:
+
+```text
+<sample_id>_img.tif
+<sample_id>_label.seg.nrrd
+```
+
+`tomo_reco_id0004_t0007vn` is excluded. The resulting CV dataset therefore
+contains 12 labeled volumes. All prepared masks are binary, with background 0
+and cell foreground 1. Image and label volumes are checked after loading in
+ZYX orientation; the NRRD label requires the project-specific XY transpose.
+
+Create the deterministic five-fold dataset with seed 46 from the project root:
+
+```bash
+cd /mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg
+module load gcc/13.2.0
+module load python/3.11.9
+source /mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/envs/cellpose-clean/bin/activate
+python repo/nucseg_lubeck/prepare_cell_cv5.py
+```
+
+The script writes:
+
+```text
+data_cell_only/cv5_seed46/
+  metadata.csv
+  test_coverage.csv
+  README.txt
+  fold_01/combined/{Trainingsdaten,Valdaten,Testdaten}/
+  ...
+  fold_05/combined/{Trainingsdaten,Valdaten,Testdaten}/
+```
+
+The shuffled outer-test group sizes are 3, 3, 2, 2, and 2. Every accepted
+volume occurs in `Testdaten` exactly once. For each fold, the next test group
+cyclically becomes `Valdaten`; all remaining volumes are `Trainingsdaten`.
+`metadata.csv` records every assignment and `test_coverage.csv` records the
+unique outer-test coverage.
+
+`prepare_cell_cv5.py` refuses to overwrite an existing `cv5_seed46` directory.
+Regeneration therefore requires deliberately moving or removing the old output
+first.
+
+### 2. Initial five-fold training
+
+Run the complete initial CV:
+
+```bash
+cd /mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/repo/nucseg_lubeck
+CV_JOB=$(sbatch --parsable slurmscripts/run_cell_cv5.slurm)
+echo "CV job: ${CV_JOB}"
+```
+
+Input:
+
+```text
+data_cell_only/cv5_seed46/fold_<XX>/combined/
+```
+
+For each fold, `run_cell_cv5.slurm`:
+
+1. Trains Cellpose-SAM for 120 epochs with seed `46 + fold`, learning rate
+   `3e-5`, weight decay `0.05`, batch size 1, and `mask_id=1`.
+2. Selects `models/best_model` by validation loss.
+3. Tunes the cell-probability threshold on that fold's validation data using a
+   coarse sweep followed by a local fine sweep. `min_size=15` and
+   `flow3D_smooth=0` remain fixed.
+4. Evaluates the selected fold recipe on the untouched outer-test split.
+5. Aggregates all 12 out-of-fold test predictions.
+
+The run directory is:
+
+```text
+runs/run_cell_cv5_seed46_<SLURM_JOB_ID>/
+```
+
+Important contents are:
+
+```text
+fold_<XX>/models/cell_fold_<XX>_final
+fold_<XX>/models/cell_fold_<XX>_final_epoch_<zero-based epoch index>
+fold_<XX>/models/best_model
+fold_<XX>/threshold_sweep_val_coarse/
+fold_<XX>/threshold_sweep_val_fine/
+fold_<XX>/inference_eval/metrics_per_sample.csv
+fold_<XX>/inference_eval/metrics_summary.csv
+selected_thresholds.tsv
+test_metrics_all.csv
+test_metrics_summary.csv
+cv_report.txt
+test_dice_violin.png
+test_dice_violin.pdf
+workflow.log
+COMPLETED
+```
+
+Cellpose checkpoint indices are zero-based. For example,
+`cell_fold_01_final_epoch_0050` is the checkpoint after completed epoch 51.
+
+The initial fold-specific test results are useful for inspecting training and
+choosing a common recipe, but they are not the final fixed-recipe performance
+estimate because each fold originally used a different validation-selected
+checkpoint and threshold.
+
+### 3. Fixed-recipe performance estimate and deployment calibration
+
+Across the five initial folds, the median selected checkpoint was completed
+epoch 51 and the median validation-selected cell-probability threshold was
+`-3.5`. The evaluation job first freezes these settings and applies exactly the
+same recipe to every original outer-test split:
+
+```text
+checkpoint: epoch 51 (`epoch_0050`)
+cellprob_threshold: -3.5
+min_size: 15
+flow3D_smooth: 0
+```
+
+This frozen evaluation is the primary cross-validated performance estimate used
+for reporting. Threshold calibration performed later must not replace these
+reported test metrics.
+
+Start the combined fixed evaluation and deployment-calibration job after the CV
+job has completed:
+
+```bash
+PROJECT_ROOT=/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg
+CV_RUN="${PROJECT_ROOT}/runs/run_cell_cv5_seed46_${CV_JOB}"
+
+EVAL_JOB=$(sbatch --parsable \
+  --export=ALL,CV_RUN_ROOT="${CV_RUN}" \
+  slurmscripts/evaluate_cell_fixed_recipe_cv.slurm)
+echo "Evaluation/calibration job: ${EVAL_JOB}"
+```
+
+Alternatively, when submitting immediately after the CV job, add:
+
+```bash
+--dependency=afterok:${CV_JOB}
+```
+
+The complete reproducibility output is written to:
+
+```text
+runs/run_cell_fixed_eval_calibration_<SLURM_JOB_ID>/
+  fixed_reporting/
+  deployment_calibration/
+  workflow.log
+  COMPLETED
+```
+
+Phase 1, `fixed_reporting`, evaluates each original fold's epoch-51 model on its
+untouched outer-test split with threshold `-3.5`. Its aggregate files are also
+copied into the source CV run with these names:
+
+```text
+fixed_recipe_epoch51_cpneg3p5_test_metrics_all.csv
+fixed_recipe_epoch51_cpneg3p5_test_metrics_summary.csv
+fixed_recipe_epoch51_cpneg3p5_cv_report.txt
+fixed_recipe_epoch51_cpneg3p5_test_dice_violin.png
+fixed_recipe_epoch51_cpneg3p5_test_dice_violin.pdf
+```
+
+Phase 2, `deployment_calibration`, has a different purpose. For each fold it:
+
+1. Combines that fold's `Trainingsdaten` and `Valdaten`.
+2. Retrains for the same 120-epoch schedule and uses the fixed epoch-51
+   checkpoint, preserving the optimizer settings from CV.
+3. Uses the former outer-test split only as held-out calibration data.
+4. Evaluates every threshold from `-6` through `2` in steps of `0.25` with
+   `min_size=15` and `flow3D_smooth=0`.
+5. Pools exactly one held-out prediction for each of the 12 volumes.
+6. Finds the best mean-Dice threshold, retains thresholds no more than 0.01
+   absolute Dice below that optimum, and selects the retained threshold whose
+   pooled predicted/ground-truth foreground-volume ratio is closest to 1.
+
+The calibration fold models and sweeps are stored under:
+
+```text
+runs/run_cell_fixed_eval_calibration_<JOB_ID>/deployment_calibration/
+  fold_<XX>/models/cell_calibration_fold_<XX>_120ep_epoch_0050
+  fold_<XX>/threshold_sweep_volume_balance/
+```
+
+The pooled deployment-calibration artifacts are copied to the source CV run:
+
+```text
+deployment_calibration_epoch51_volume_balance_per_sample_all_thresholds.csv
+deployment_calibration_epoch51_volume_balance_threshold_summary.csv
+deployment_calibration_epoch51_volume_balance_best.json
+deployment_calibration_epoch51_volume_balance_report.txt
+```
+
+For the current dataset, the selected deployment setting is:
+
+```text
+cellprob_threshold: -2.25
+min_size: 15
+flow3D_smooth: 0
+checkpoint epoch: 51
+```
+
+The threshold `-2.25` is a deployment calibration setting, not an additional
+unbiased test result. The fixed epoch-51/`-3.5` outer-test metrics remain the
+performance estimate. Because the recipe was summarized from this same small CV
+campaign, an entirely independent labeled dataset would still be the strongest
+external confirmation of generalization.
+
+### 4. Final model trained on all 12 volumes
+
+After successful fixed evaluation and calibration, train the deployable model
+on all 12 accepted labeled volumes:
+
+```bash
+FINAL_JOB=$(sbatch --parsable \
+  --export=ALL,CV_SOURCE_RUN="${CV_RUN}" \
+  slurmscripts/run_cell_final_all.slurm)
+echo "Final-model job: ${FINAL_JOB}"
+```
+
+When chaining jobs, use:
+
+```bash
+--dependency=afterok:${EVAL_JOB}
+```
+
+The final run is written to:
+
+```text
+runs/run_cell_final_all_seed46_<SLURM_JOB_ID>/
+```
+
+The job reassembles all 12 unique volumes, trains for 120 epochs with seed 46,
+learning rate `3e-5`, weight decay `0.05`, and batch size 1, and deploys the
+preselected epoch-51 checkpoint:
+
+```text
+runs/run_cell_final_all_seed46_<JOB_ID>/models/
+  cell_final_all_120ep
+  cell_final_all_120ep_epoch_0050
+```
+
+The deployment model is `cell_final_all_120ep_epoch_0050`. The 120-epoch model
+and `best_model` are not used for deployment. The run also contains:
+
+```text
+deployment_config.txt
+deployment_calibration_best.json
+deployment_calibration_report.txt
+fixed_recipe_cv_test_metrics_all.csv
+fixed_recipe_cv_test_metrics_summary.csv
+fixed_recipe_cv_report.txt
+training_data_qc_not_validation/
+train.log
+workflow.log
+COMPLETED
+```
+
+`training_data_qc_not_validation` is in-sample quality control and must not be
+reported as an independent performance estimate.
+
+### 5. Convert a large TIFF volume to OME-Zarr
+
+The conversion script is:
+
+```text
+/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/repo/nucseg_lubeck/convert_tif_mask_to_ome_zarr.py
+```
+
+The historical `/user/.../.project/dir.project` path may no longer resolve on
+the cluster. Under the current project mount, use:
+
+```text
+/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/repo/nucseg_lubeck/convert_tif_mask_to_ome_zarr.py
+```
+
+The raw inference volume was converted on Windows PowerShell with:
+
+```powershell
+python .\convert_tif_mask_to_ome_zarr.py `
+  --tif "D:\DESY_Downloads\id0004_t0015_roehrle27_5_multiDist\tomo_reco_id0004_t0015.tif" `
+  --mask="" `
+  --scaling-metadata="" `
+  --out "D:\DESY_Downloads\id0004_t0015_roehrle27_5_multiDist\tomo_reco_id0004_t0015_raw.ome.zarr" `
+  --z-chunk 8 `
+  --zarr-chunks 8,256,256 `
+  --compressor-level 5
+```
+
+After transfer to GWDG, the current inference input is expected at:
+
+```text
+data_inference/id0004_t0015/fullzarr/
+  tomo_reco_id0004_t0015_raw.ome.zarr
+```
+
+The image array is read from OME-Zarr key `0` in ZYX order.
+
+### 6. Large-volume OME-Zarr inference
+
+The large-volume job uses `infer_cells_large_ome_zarr.slurm`, which invokes
+`infer_ome_zarr.py`. By default it automatically chooses the newest completed
+final all-data run. For complete reproducibility, pass the intended model
+explicitly:
+
+```bash
+PROJECT_ROOT=/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg
+FINAL_RUN="${PROJECT_ROOT}/runs/run_cell_final_all_seed46_${FINAL_JOB}"
+FINAL_MODEL="${FINAL_RUN}/models/cell_final_all_120ep_epoch_0050"
+
+INFER_JOB=$(sbatch --parsable \
+  --export=ALL,MODEL_PATH="${FINAL_MODEL}",CELLPROB_THRESHOLD=-2.25,MIN_SIZE=15,FLOW3D_SMOOTH=0 \
+  slurmscripts/infer_cells_large_ome_zarr.slurm)
+echo "Inference job: ${INFER_JOB}"
+```
+
+When chaining directly after final training, add:
+
+```bash
+--dependency=afterok:${FINAL_JOB}
+```
+
+Default inference settings are:
+
+```text
+input: data_inference/id0004_t0015/fullzarr/tomo_reco_id0004_t0015_raw.ome.zarr
+array_key: 0
+block_shape: 40,256,256
+halo: 5,32,32
+output_chunks: 8,256,256
+anisotropy: 1.0
+cellprob_threshold: -2.25
+min_size: 15
+flow3D_smooth: 0
+skip policy: skip exactly zero input cores only
+```
+
+The full segmentation is written beside the input as:
+
+```text
+data_inference/id0004_t0015/fullzarr/
+  tomo_reco_id0004_t0015_cells_cpneg2p25.ome.zarr
+```
+
+Run metadata and logs are written to:
+
+```text
+runs/run_cell_inference_tomo_reco_id0004_t0015_<SLURM_JOB_ID>/
+  inference_config.txt
+  infer_ome_zarr.log
+  foreground_volume_summary.json
+  python_packages.txt
+  submitted_job.slurm
+  workflow.log
+  COMPLETED
+```
+
+`foreground_volume_summary.json` reports the number and fraction of output
+voxels with label greater than zero. Conversion to physical volume additionally
+requires the correct voxel spacing. Block labels are made unique, but instances
+crossing block boundaries are not merged; binary segmented volume is therefore
+usable, while cell counts and per-cell morphology require a separate
+cross-block instance-merging procedure.

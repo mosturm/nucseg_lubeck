@@ -196,6 +196,7 @@ def binary_volume_metrics(pred_bin: np.ndarray, gt_bin: np.ndarray) -> dict:
         "precision": float(precision),
         "recall": float(recall),
         "specificity": float(specificity),
+        "pred_gt_ratio": float(pred_bin.sum() / gt_bin.sum()) if gt_bin.sum() > 0 else 0.0,
         "pred_fg_voxels": int(pred_bin.sum()),
         "gt_fg_voxels": int(gt_bin.sum()),
     }

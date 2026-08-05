@@ -217,8 +217,27 @@ submit slurm cv:
 
 cd /mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/repo/nucseg_lubeck
 
-sed -i 's/\r$//' run_cell_cv5.slurm
-bash -n run_cell_cv5.slurm
-sbatch run_cell_cv5.slurm
+sed -i 's/\r$//' run_vessel_cv5.slurm
+bash -n run_vessel_cv5.slurm
+sbatch run_vessel_cv5.slurm
 
  squeue -j 15078302
+
+
+
+
+omeZarrconversion:
+
+PS C:\Users\Moritz_Sturm> python .\convert_tif_mask_to_ome_zarr.py `
+>>   --tif "D:\DESY_Downloads\id0004_t0015_roehrle27_5_multiDist\tomo_reco_id0004_t0015.tif" `
+>>   --mask="" `
+>>   --scaling-metadata="" `
+>>   --out "D:\DESY_Downloads\id0004_t0015_roehrle27_5_multiDist\tomo_reco_id0004_t0015_raw.ome.zarr" `
+>>   --z-chunk 8 `
+>>   --zarr-chunks 8,256,256 `
+>>   --compressor-level 5
+
+
+PS C:\Users\Moritz_Sturm> scp -r -i "C:\Users\Moritz_Sturm\.ssh\id_ed25519_gwdg" `
+>>   "D:\DESY_Downloads\id0004_t0015_roehrle27_5_multiDist\tomo_reco_id0004_t0015_raw.ome.zarr" `
+>>   u26421@glogin-gpu.hpc.gwdg.de:/user/unigoe.uprp-moham/u26421/.project/dir.project/nucseg/data_inference/id0004_t0015/fullzarr/
