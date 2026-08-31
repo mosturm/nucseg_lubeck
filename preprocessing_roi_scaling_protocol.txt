@@ -1,0 +1,150 @@
+Preprocessing protocol: ROI cropping and scaling for vessel/neuron annotation
+===============================================================================
+
+Source image geometry
+---------------------
+All base TIFF stacks are assumed to have size:
+
+    2560 x 2560 x 2156
+
+Coordinate convention in Fiji/ImageJ
+------------------------------------
+- X and Y coordinates are zero-based.
+- Z slice numbers are one-based.
+- X/Y ranges are inclusive in the ROI tables.
+- Z ranges are inclusive in the ROI tables.
+
+Dataset structure
+-----------------
+The preprocessing follows the proposed multi-scale annotation plan:
+
+1. Fine/local model:
+   - Number of ROIs: 3
+   - Source crop: 180 x 180 x 130
+   - Final size: 180 x 180 x 130
+   - Annotation target: blood vessels + neurons
+   - Scaling: none
+
+2. Fine vessel supplement:
+   - Number of ROIs: 1
+   - Source crop: 180 x 180 x 130
+   - Final size: 180 x 180 x 130
+   - Annotation target: blood vessels only
+   - Scaling: none
+
+3. Middle vessel model:
+   - Number of ROIs: 3
+   - Source crop: 768 x 768 x 555
+   - Final size: 180 x 180 x 130
+   - Annotation target: blood vessels only
+   - Fiji scaling:
+       X scale = 180 / 768  = 0.234375
+       Y scale = 180 / 768  = 0.234375
+       Z scale = 130 / 555  = 0.234234
+   - Rationale:
+       The source Z-depth was changed from the original 460 to 555 so that
+       X, Y, and Z are downsampled by approximately the same factor.
+
+4. Coarse vessel model:
+   - Number of ROIs: 3
+   - Source crop: 2560 x 2560 x 1849
+   - Final size: 180 x 180 x 130
+   - Annotation target: blood vessels only
+   - Fiji scaling:
+       X scale = 180 / 2560 = 0.0703125
+       Y scale = 180 / 2560 = 0.0703125
+       Z scale = 130 / 1849 = 0.070308
+   - Rationale:
+       The source Z-depth was changed from the original 1529 to 1849 so that
+       X, Y, and Z are downsampled by approximately the same factor.
+
+Fiji cropping workflow
+----------------------
+For each ROI:
+
+1. Open the selected TIFF stack in Fiji.
+
+2. Define the XY rectangle:
+       Edit > Selection > Specify...
+
+   Enter:
+       X = ROI x_start
+       Y = ROI y_start
+       Width  = source crop width
+       Height = source crop height
+
+3. Duplicate the selected Z range:
+       Image > Duplicate...
+
+   Enable:
+       Duplicate stack
+
+   Enter:
+       Range = z_start-z_end
+
+4. For fine/local and fine-supplement ROIs:
+       Save the crop directly.
+       No scaling is applied.
+
+5. For middle and coarse ROIs:
+       After cropping, scale to:
+           Width  = 180
+           Height = 180
+           Depth  = 130
+
+       Fiji menu:
+           Image > Scale...
+
+Interpolation rules
+-------------------
+- For raw intensity image data:
+      Use Bilinear or another intensity interpolation method.
+
+- For segmentation masks / label images:
+      Use nearest-neighbor interpolation.
+      Do not use bilinear interpolation for masks, because it creates
+      fractional label values.
+
+Valid crop start ranges
+-----------------------
+Given the base stack size 2560 x 2560 x 2156:
+
+1. Fine/local and fine vessel supplement crops:
+       Crop size: 180 x 180 x 130
+       Valid X start: 0 to 2380
+       Valid Y start: 0 to 2380
+       Valid Z start: 1 to 2027
+
+2. Middle vessel crops:
+       Crop size: 768 x 768 x 555
+       Valid X start: 0 to 1792
+       Valid Y start: 0 to 1792
+       Valid Z start: 1 to 1602
+
+3. Coarse vessel crops:
+       Crop size: 2560 x 2560 x 1849
+       Valid X start: 0 only
+       Valid Y start: 0 only
+       Valid Z start: 1 to 308
+
+Recommended output naming
+-------------------------
+Use filenames that include scan ID, TIFF ID, ROI number, crop position, and Z range.
+
+Example:
+    ROI_05_middle_scan0003_tiff022_x108_y275_z48-602_scaled_180x180x130.tif
+
+This avoids confusion when different scans contain the same TIFF number.
+
+Important note
+--------------
+The final preprocessing plan uses a common final patch size of:
+
+    180 x 180 x 130
+
+for all ROIs.
+
+This differs from the original proposed middle/coarse final depth of approximately
+108 slices. The change was made to keep all final training patches consistent
+while preserving near-isotropic scale factors in X, Y, and Z by increasing the
+middle/coarse source Z-depth before scaling.
