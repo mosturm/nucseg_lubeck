@@ -13,11 +13,23 @@ PROJECT_ROOT="/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg"
 REPO_ROOT="${PROJECT_ROOT}/repo/nucseg_lubeck"
 VENV_ACTIVATE="${PROJECT_ROOT}/envs/cellpose-clean/bin/activate"
 
-SAMPLE_ID="${SAMPLE_ID:-tomo_reco_id0004_t0015}"
-DATA_ROOT="${PROJECT_ROOT}/data_inference/id0004_t0015/fullzarr"
+SAMPLE_ID="${SAMPLE_ID:-tomo_reco_id0002_t0015}"
+DATA_ROOT="${DATA_ROOT:-${PROJECT_ROOT}/data_inference/tomos_to_segment/fullzarr}"
 RAW_ZARR="${RAW_ZARR:-${DATA_ROOT}/${SAMPLE_ID}_raw.ome.zarr}"
-LABEL_ZARR="${LABEL_ZARR:-${DATA_ROOT}/${SAMPLE_ID}_cells_cpneg2p25_instances_merged.ome.zarr}"
-OUTDIR="${OUTDIR:-${DATA_ROOT}/${SAMPLE_ID}_cell_visualization_instances_merged}"
+if [[ -z "${LABEL_ZARR:-}" ]]; then
+    MERGED_LABEL_ZARR="${DATA_ROOT}/${SAMPLE_ID}_cells_cpneg2p25_instances_merged.ome.zarr"
+    DISTRIBUTED_LABEL_ZARR="${DATA_ROOT}/${SAMPLE_ID}_cells_cpneg2p25.ome.zarr"
+    if [[ -d "${MERGED_LABEL_ZARR}" ]]; then
+        LABEL_ZARR="${MERGED_LABEL_ZARR}"
+        LABEL_VARIANT="instances_merged"
+    else
+        LABEL_ZARR="${DISTRIBUTED_LABEL_ZARR}"
+        LABEL_VARIANT="distributed"
+    fi
+else
+    LABEL_VARIANT="custom"
+fi
+OUTDIR="${OUTDIR:-${DATA_ROOT}/${SAMPLE_ID}_cell_visualization_${LABEL_VARIANT}}"
 PLANE="${PLANE:-both}"
 SCALE="${SCALE:-0.5}"
 OVERLAY_ALPHA="${OVERLAY_ALPHA:-0.62}"
@@ -35,6 +47,8 @@ module load python/3.11.9
 source "${VENV_ACTIVATE}"
 export PYTHONUNBUFFERED=1
 
+test -d "${RAW_ZARR}"
+test -d "${LABEL_ZARR}"
 mkdir -p "${OUTDIR}"
 
 EXTRA_ARGS=()
@@ -69,3 +83,4 @@ python -u "${REPO_ROOT}/visualize_semantic_ome_zarr.py" \
     "${EXTRA_ARGS[@]}"
 
 echo "Visualization output: ${OUTDIR}"
+echo "Labels used: ${LABEL_ZARR}"

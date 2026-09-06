@@ -581,34 +581,80 @@ data_inference/id0004_t0015/fullzarr/
 
 The image array is read from OME-Zarr key `0` in ZYX order.
 
-### 6. Large-volume OME-Zarr inference
+### 6. Four-GPU large-volume OME-Zarr inference
 
-The large-volume job uses `infer_cells_large_ome_zarr.slurm`, which invokes
-`infer_ome_zarr.py`. By default it automatically chooses the newest completed
-final all-data run. For complete reproducibility, pass the intended model
-explicitly:
+The production cell-inference path uses `submit_cell_distributed_inference.sh`.
+It submits a CPU preparation job, a four-task A100 GPU array, and a dependent
+CPU finalization job. Each GPU processes a disjoint round-robin subset of the
+same `40 x 256 x 256` inference cores. Halo geometry, model parameters, empty
+core handling, and output naming remain identical to the former single-GPU
+job.
+
+This is spatial parallelization of one original-resolution cell model, not
+multiscale inference. Unlike the vessel pipeline, it performs no downsampling,
+scale-specific inference, upsampling, or union operation.
+
+The GPU workers initially use non-overlapping temporary label-ID ranges. The
+finalization job verifies all four completion markers and remaps those ranges
+to consecutive global `uint32` instance IDs. This preserves compatibility with
+`merge_block_instances_ome_zarr.py` and the cell-radius analysis. Instances
+crossing core boundaries remain separate until that optional merge step.
+
+Run the pipeline from the repository root. By default it automatically chooses
+the newest completed final all-data model; for complete reproducibility, pass
+the intended model explicitly:
 
 ```bash
 PROJECT_ROOT=/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg
 FINAL_RUN="${PROJECT_ROOT}/runs/run_cell_final_all_seed46_${FINAL_JOB}"
 FINAL_MODEL="${FINAL_RUN}/models/cell_final_all_120ep_epoch_0050"
+SAMPLE_ID=tomo_reco_id0002_t0015
+INPUT_DIR="${PROJECT_ROOT}/data_inference/tomos_to_segment/fullzarr"
+INPUT_ZARR="${INPUT_DIR}/${SAMPLE_ID}_raw.ome.zarr"
 
-INFER_JOB=$(sbatch --parsable \
-  --export=ALL,MODEL_PATH="${FINAL_MODEL}",CELLPROB_THRESHOLD=-2.25,MIN_SIZE=15,FLOW3D_SMOOTH=0 \
-  slurmscripts/infer_cells_large_ome_zarr.slurm)
-echo "Inference job: ${INFER_JOB}"
+export PROJECT_ROOT SAMPLE_ID INPUT_ZARR
+export MODEL_PATH="${FINAL_MODEL}"
+export CELLPROB_THRESHOLD=-2.25
+export MIN_SIZE=15
+export FLOW3D_SMOOTH=0
+
+cd "${PROJECT_ROOT}/repo/nucseg_lubeck"
+bash submit_cell_distributed_inference.sh
 ```
 
-When chaining directly after final training, add:
+The current input directory can contain multiple converted tomograms:
+
+```text
+data_inference/tomos_to_segment/fullzarr/
+  tomo_reco_<id>_<timepoint>_raw.ome.zarr
+  ...
+```
+
+To submit every `*_raw.ome.zarr` in that directory, while skipping samples
+whose default cell output already exists, run:
 
 ```bash
---dependency=afterok:${FINAL_JOB}
+PROJECT_ROOT=/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg
+INPUT_DIR="${PROJECT_ROOT}/data_inference/tomos_to_segment/fullzarr"
+
+export PROJECT_ROOT INPUT_DIR
+export CELLPROB_THRESHOLD=-2.25
+export MIN_SIZE=15
+export FLOW3D_SMOOTH=0
+
+cd "${PROJECT_ROOT}/repo/nucseg_lubeck"
+bash submit_cell_distributed_folder.sh
 ```
+
+Each input gets an independent prepare/four-GPU/finalize pipeline. Slurm queues
+all submitted pipelines and starts them as resources become available. The
+folder wrapper defaults to `SKIP_EXISTING=1`; neither an existing single-GPU
+output nor any previous run directory is overwritten.
 
 Default inference settings are:
 
 ```text
-input: data_inference/id0004_t0015/fullzarr/tomo_reco_id0004_t0015_raw.ome.zarr
+input: data_inference/tomos_to_segment/fullzarr/<sample_id>_raw.ome.zarr
 array_key: 0
 block_shape: 40,256,256
 halo: 5,32,32
@@ -618,27 +664,48 @@ cellprob_threshold: -2.25
 min_size: 15
 flow3D_smooth: 0
 skip policy: skip exactly zero input cores only
+GPU workers: 4 concurrent A100 array tasks
+block assignment: deterministic round-robin
+temporary IDs: disjoint per-worker ranges
+final IDs: compact consecutive global uint32 labels
 ```
 
 The full segmentation is written beside the input as:
 
 ```text
-data_inference/id0004_t0015/fullzarr/
-  tomo_reco_id0004_t0015_cells_cpneg2p25.ome.zarr
+data_inference/tomos_to_segment/fullzarr/
+  <sample_id>_cells_cpneg2p25.ome.zarr
 ```
 
-Run metadata and logs are written to:
+Run metadata and logs are written to a timestamped pipeline directory:
 
 ```text
-runs/run_cell_inference_tomo_reco_id0004_t0015_<SLURM_JOB_ID>/
+runs/run_cell_distributed_<sample_id>_<timestamp>_<pid>/
+  submitted_pipeline.txt
+  manifest.json
   inference_config.txt
-  infer_ome_zarr.log
+  prepare.log
+  workers/worker_00.log
+  workers/worker_00.json
+  workers/worker_00.DONE
+  ...
+  workers/worker_03.log
+  workers/worker_03.json
+  workers/worker_03.DONE
+  finalize.log
   foreground_volume_summary.json
   python_packages.txt
-  submitted_job.slurm
-  workflow.log
+  submitted_prepare.slurm
+  submitted_finalize.slurm
+  PREPARED
   COMPLETED
 ```
+
+`submitted_pipeline.txt` records the preparation, GPU-array, and finalization
+job IDs. The temporary sparse-label Zarr is removed only after finalization has
+successfully written the compact output and summary. Set
+`KEEP_WORKING_LABELS=1` before submission only when that temporary audit copy is
+needed.
 
 `foreground_volume_summary.json` reports the number and fraction of output
 voxels with label greater than zero. Conversion to physical volume additionally
@@ -646,6 +713,58 @@ requires the correct voxel spacing. Block labels are made unique, but instances
 crossing block boundaries are not merged; binary segmented volume is therefore
 usable, while cell counts and per-cell morphology require a separate
 cross-block instance-merging procedure.
+
+### 7. Batch visualization of completed cell tomograms
+
+The center-section visualization can be submitted for every successfully
+segmented OME-Zarr in `tomos_to_segment/fullzarr`. The batch launcher pairs each
+`*_raw.ome.zarr` with its cell labels, prefers an
+`*_cells_cpneg2p25_instances_merged.ome.zarr` result when present, and otherwise
+uses the distributed `*_cells_cpneg2p25.ome.zarr` output. Raw volumes without a
+completed cell-label Zarr are skipped.
+
+```bash
+PROJECT_ROOT=/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg
+INPUT_DIR="${PROJECT_ROOT}/data_inference/tomos_to_segment/fullzarr"
+
+export PROJECT_ROOT INPUT_DIR
+cd "${PROJECT_ROOT}/repo/nucseg_lubeck"
+bash submit_cell_visualization_folder.sh
+```
+
+This submits one CPU job per completed tomogram using
+`slurmscripts/visualize_cells_center_sections.slurm`. Monitor all visualization
+jobs with:
+
+```bash
+squeue -u "$USER" -n cell-zarr-viz
+```
+
+Each output directory is written beside its input. Without prior instance
+merging, the naming convention is:
+
+```text
+data_inference/tomos_to_segment/fullzarr/
+  <sample_id>_cell_visualization_distributed/
+    raw_xz_*.png
+    raw_yz_*.png
+    overlay_red_xz_*.png
+    overlay_red_yz_*.png
+    raw_vs_overlay_red_xz_*.png
+    raw_vs_overlay_red_yz_*.png
+    cell_radius_histogram.png
+    f_soma_250um_histogram.png
+    soma_fields_250um.npz
+    visualization_metadata.json
+```
+
+The XZ and YZ sections use the center of each volume and the established red
+cell overlay, 0.5 display scale, 1.2 mm physical extent per axis, and 250 um
+spatial bins. Semantic overlays and `f_soma` remain valid without instance
+reconciliation. Radius, cell-count, and `r_soma` results from a distributed
+unmerged label Zarr remain biased by cells split across inference-block
+boundaries; use the merged label output for publication-quality instance
+statistics.
 
 ---
 
@@ -894,6 +1013,7 @@ union. The files are:
 ```text
 vessel_multiscale_ome_zarr.py
 submit_vessel_multiscale_inference.sh
+submit_vessel_multiscale_folder.sh
 slurmscripts/prepare_vessel_multiscale_inference.slurm
 slurmscripts/infer_vessel_multiscale_array.slurm
 slurmscripts/finalize_vessel_multiscale_inference.slurm
@@ -959,8 +1079,8 @@ Run the complete pipeline with the recorded scale defaults:
 
 ```bash
 export PROJECT_ROOT=/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg
-export INPUT_ZARR="${PROJECT_ROOT}/data_inference/id0004_t0015/fullzarr/tomo_reco_id0004_t0015_raw.ome.zarr"
-export SAMPLE_ID=tomo_reco_id0004_t0015
+export INPUT_ZARR="${PROJECT_ROOT}/data_inference/tomos_to_segment/fullzarr/tomo_reco_id0002_t0015_raw.ome.zarr"
+export SAMPLE_ID=tomo_reco_id0002_t0015
 export FINAL_RUN_ROOT="${PROJECT_ROOT}/runs/run_vessel_final_all_seed46_15305823"
 
 cd "${PROJECT_ROOT}/repo/nucseg_lubeck"
@@ -972,9 +1092,31 @@ configuration exist. It prints the preparation job ID, GPU-array job ID, union
 job ID, run directory, and final output. By default the semantic union is:
 
 ```text
-data_inference/id0004_t0015/fullzarr/
-  tomo_reco_id0004_t0015_vessels_multiscale_union.ome.zarr
+data_inference/tomos_to_segment/fullzarr/
+  <sample_id>_vessels_multiscale_union.ome.zarr
 ```
+
+To submit every valid `*_raw.ome.zarr` in the shared inference directory, use
+the folder launcher. Existing union outputs are skipped by default, and an
+invalid/incomplete raw Zarr is reported without blocking the other tomograms:
+
+```bash
+PROJECT_ROOT=/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg
+INPUT_DIR="${PROJECT_ROOT}/data_inference/tomos_to_segment/fullzarr"
+FINAL_RUN_ROOT="${PROJECT_ROOT}/runs/run_vessel_final_all_seed46_15305823"
+
+export PROJECT_ROOT INPUT_DIR FINAL_RUN_ROOT
+cd "${PROJECT_ROOT}/repo/nucseg_lubeck"
+bash submit_vessel_multiscale_folder.sh
+```
+
+Each valid input receives an independent prepare/eight-worker/finalize chain.
+The GPU array is `0-7%4`, so each tomogram uses at most four A100s concurrently
+just like the proven single-tomogram vessel run. Multiple tomograms are
+submitted together; scheduler and account limits determine how many workers
+actually run at once. The final model bundle is fixed explicitly by
+`FINAL_RUN_ROOT`, preventing accidental use of a cell model or a different
+vessel run.
 
 Intermediate and reproducibility outputs are retained under:
 
@@ -1024,6 +1166,53 @@ validation against labeled slabs; it does not inherit the individual models'
 CV estimates automatically. The workflow creates semantic `uint8` masks only;
 it does not merge instances or apply the optional analytical tubularity filter.
 
+### 6. Batch combined cell and vessel visualization
+
+After both distributed cell inference and multiscale vessel inference have
+finished, submit the combined center-section visualization for every complete
+raw/cell/vessel triplet in the shared folder:
+
+```bash
+PROJECT_ROOT=/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg
+INPUT_DIR="${PROJECT_ROOT}/data_inference/tomos_to_segment/fullzarr"
+
+export PROJECT_ROOT INPUT_DIR
+cd "${PROJECT_ROOT}/repo/nucseg_lubeck"
+bash submit_cell_vessel_visualization_folder.sh
+```
+
+The launcher scans `*_raw.ome.zarr`, requires a completed distributed cell
+output or an instance-merged replacement, and resolves the newest matching
+multiscale vessel run carrying a `COMPLETED` marker. Samples missing either
+segmentation are reported and skipped without blocking complete samples.
+Existing outputs containing `overlay_metadata.json` are skipped by default.
+
+One CPU visualization job is submitted per complete tomogram. Its output is:
+
+```text
+data_inference/tomos_to_segment/fullzarr/
+  <sample_id>_cell_vessel_center_sections/
+    raw_xz_*.png
+    raw_yz_*.png
+    cells_red_xz_*.png
+    cells_red_yz_*.png
+    cells_red_vessels_blue_xz_*.png
+    cells_red_vessels_blue_yz_*.png
+    raw_vs_cells_vs_cells_vessels_xz_*.png
+    raw_vs_cells_vs_cells_vessels_yz_*.png
+    raw_vs_cells_vessels_xz_*.png
+    raw_vs_cells_vessels_yz_*.png
+    vessels_mid_coarse_3d.html
+    overlay_metadata.json
+```
+
+The 2D views use the same central XZ/YZ sections, 0.5 display scaling, red cell
+overlay, blue vessel overlay, and vessel-over-cell overlap precedence as the
+original single-tomogram visualization. The HTML remains the existing
+postprocessed mid/coarse vessel comparison; it does not display cells. The
+full combined cell-and-all-vessel-scale 3D renderer remains the separate
+`visualize_cells_vessels_all_scales_3d.py` workflow.
+
 ## File And Workflow Inventory
 
 The table below covers every source, configuration, and submission file shown
@@ -1044,7 +1233,7 @@ path.
 | `sweep_thresholds_segment_nuc.py` | Runs repeated validation inference over Cellpose postprocessing settings and writes per-sample and aggregate threshold metrics; supports cell-probability, `min_size`, and `flow3D_smooth` sweeps. | **Shared calibration engine.** Called after training by cell/vessel CV, fixed-recipe calibration, one-time cell calibration, and older scale evaluation. |
 | `test_infer.py` | Runs one selected model/parameter recipe on a labeled test directory and writes predictions, previews, per-sample metrics, and metric summaries. | **Shared evaluation engine.** Called only after model and inference parameters have been fixed for the relevant evaluation stage. |
 | `convert_tif_mask_to_ome_zarr.py` | Converts a large TIFF and optional mask/scaling metadata into chunked OME-Zarr, preserving the raw volume as array `0`. | **Large-volume input preparation.** Run before either cell or vessel OME-Zarr inference when the source is TIFF. |
-| `infer_ome_zarr.py` | Performs halo-aware, blockwise Cellpose inference on one OME-Zarr scale and writes a same-grid label/semantic Zarr plus progress and timing information. | **Shared single-GPU inference engine.** Called by `infer_cells_large_ome_zarr.slurm` and the alternative `infer_vessels_large_ome_zarr.slurm`. It is not the engine used by the eight-worker multiscale vessel array. |
+| `infer_ome_zarr.py` | Performs halo-aware, blockwise Cellpose inference on one OME-Zarr scale and writes a same-grid label/semantic Zarr plus progress and timing information. | **Shared single-GPU inference engine.** Used by the legacy cell fallback and alternative single-scale vessel job; it is not the engine used by either distributed production pipeline. |
 | `prepare_cell_only_dataset.py` | Combines the old and new annotation sources, keeps available cell foreground, remaps it to mask ID `1`, pairs TIFFs with labels, and creates the original seed-46 train/validation/test dataset. | **Cell 1: base dataset preparation.** Run only when rebuilding `data_cell_only/` from the source annotation folders. |
 | `prepare_cell_cv5.py` | Builds the deterministic five-fold cell dataset from the accepted cell samples, keeps image/label orientation aligned, and excludes the rejected `tomo_reco_id0004_t0007vn` sample. | **Cell 2: CV split preparation.** Produces the fold directories consumed by `run_cell_cv5.slurm`. |
 | `slurmscripts/run_cell_cv5.slurm` | Trains one cell model per outer fold, performs coarse/fine validation threshold selection, evaluates each untouched test fold, and launches aggregation. | **Cell 3: unbiased 5-fold CV.** Primary cell-performance-estimation job; calls `segment_nuc.py`, `sweep_thresholds_segment_nuc.py`, `test_infer.py`, then `aggregate_cell_cv.py`. |
@@ -1053,13 +1242,23 @@ path.
 | `aggregate_cell_calibration.py` | Pools threshold-level cell calibration results across folds, compares best-Dice and volume-balanced choices, applies the Dice-tolerance rule, and writes the selected deployment setting/report. | **Cell 4a: deployment calibration aggregation.** Called by `evaluate_cell_fixed_recipe_cv.slurm` and the one-time calibration job. |
 | `slurmscripts/calibrate_cell_volume_once.slurm` | Repeats a one-off threshold scan/volume-balance analysis against existing held-out fold outputs without repeating the full primary CV workflow. | **Cell 4b: optional calibration utility.** Use for diagnostic or revised threshold grids; it does not replace the frozen CV performance estimate. |
 | `slurmscripts/run_cell_final_all.slurm` | Collects all accepted labeled cell slabs, reproduces the selected training schedule, selects the fixed deployment epoch, copies the CV/calibration evidence, performs training-data QC, and writes the final model/configuration. | **Cell 5: final deployment training.** Run after `evaluate_cell_fixed_recipe_cv.slurm`; output is `runs/run_cell_final_all_seed46_<jobid>/`. |
-| `slurmscripts/infer_cells_large_ome_zarr.slurm` | Resolves the final cell model/settings and runs blockwise Cellpose inference on a full raw OME-Zarr, with reproducibility metadata and foreground-volume summary. | **Cell 6: large-volume inference.** Calls `infer_ome_zarr.py` after TIFF-to-Zarr conversion and final-model training. |
+| `submit_cell_distributed_inference.sh` | Resolves the final cell model and unchanged inference settings, creates the timestamped run, and submits CPU preparation, four concurrent A100 array tasks, and dependent CPU finalization. | **Cell 6: production four-GPU entry point.** This is the normal command after OME-Zarr conversion and final-model training. |
+| `submit_cell_distributed_folder.sh` | Finds every `*_raw.ome.zarr` in the configured input directory and submits one independent four-GPU cell pipeline per sample, skipping existing default outputs unless explicitly changed. | **Cell 6 batch entry point.** Use for `data_inference/tomos_to_segment/fullzarr/` when several converted tomograms are ready. |
+| `cell_distributed_ome_zarr.py` | Implements deterministic block planning, chunk-safe distributed Cellpose inference, collision-free temporary worker IDs, final compact global instance IDs, metadata, and foreground summaries. | **Cell 6 engine.** Called with `prepare`, `infer-worker`, and `finalize` by the three distributed SLURM stages. |
+| `slurmscripts/prepare_cell_distributed_inference.slurm` | Validates input/model/settings, creates the temporary chunk-aligned label store, writes the manifest/configuration, and marks the run prepared. | **Cell 6a: CPU preparation.** First job submitted by `submit_cell_distributed_inference.sh`. |
+| `slurmscripts/infer_cell_distributed_array.slurm` | Runs one A100 per array task; four tasks concurrently process disjoint round-robin core blocks with the original model, halo, threshold, size, and smoothing settings. | **Cell 6b: distributed GPU inference.** Starts after successful preparation. |
+| `slurmscripts/finalize_cell_distributed_inference.slurm` | Requires all four worker markers, compacts temporary IDs to consecutive `uint32` labels, writes the standard output/metadata/summary, and removes temporary labels after success. | **Cell 6c: CPU finalization.** Starts only after all GPU tasks succeed. |
+| `slurmscripts/infer_cells_large_ome_zarr.slurm` | Original one-A100 blockwise Cellpose inference wrapper using `infer_ome_zarr.py`. | **Cell legacy single-GPU fallback.** Retained for comparison or troubleshooting; superseded in production by the four-GPU pipeline. |
 | `merge_block_instances_ome_zarr.py` | Reconciles instance IDs that were split at known inference-core boundaries and writes a merged instance OME-Zarr plus merge audit/summary. | **Cell 7: optional instance correction.** Needed for cell-size/radius statistics; not required for binary `f_soma`. |
 | `slurmscripts/merge_cell_block_instances.slurm` | CPU SLURM wrapper that supplies the block geometry and paths to `merge_block_instances_ome_zarr.py`. | **Cell 7a: optional merge submission.** Run after cell inference and before publication-quality instance-radius analysis. |
-| `visualize_semantic_ome_zarr.py` | Creates center-section raw/overlay views and soma statistics, including equivalent-radius and `f_soma` distributions and 250-micrometer binned maps. | **Cell 8: analysis and visualization.** Reads raw and inferred/merged OME-Zarr outputs. |
+| `visualize_semantic_ome_zarr.py` | Creates center-section raw/overlay views and soma statistics, including a log10-count equivalent-radius histogram, the `f_soma` distribution, and 250-micrometer binned maps. | **Cell 8: analysis and visualization.** Reads raw and inferred/merged OME-Zarr outputs. |
 | `slurmscripts/visualize_cells_center_sections.slurm` | CPU SLURM wrapper for the semantic OME-Zarr visualization/statistics script with project-specific paths and physical dimensions. | **Cell 8a: visualization submission.** Run after inference, and after instance merging when radius results are required. |
+| `submit_cell_visualization_folder.sh` | Discovers raw tomograms with completed cell outputs, prefers reconciled instance labels when available, and submits one independent center-section/statistics job per sample while skipping completed visualizations. | **Cell 8 batch entry point.** Use after folder-level distributed inference to visualize all successful tomograms in `tomos_to_segment/fullzarr`. |
 | `visualize_cell_vessel_overlay_ome_zarr.py` | Writes aligned raw, red-cell, and red-cell/blue-vessel center sections, then creates a self-contained interactive 3D HTML from only the mid/coarse masks. It compares `mid OR coarse` against `postprocessed mid OR postprocessed coarse`; each scale is filtered on its native grid before coarse is mapped to the mid display grid. | **Cell/vessel 9: combined 2D and 3D visualization.** Run after segmentation, retained multiscale intermediates, and analytical calibration exist. |
 | `slurmscripts/visualize_cell_vessel_overlay.slurm` | CPU wrapper that resolves the latest multiscale run, the scale-specific saved mid rule, and the coarse stage-2 rule, then runs the 2D renderer and interactive before/after comparison. | **Cell/vessel 9a: visualization submission.** Produces aligned XZ/YZ panels and toggleable `vessels_mid_coarse_3d.html`. |
+| `submit_cell_vessel_visualization_folder.sh` | Discovers complete raw/cell/vessel triplets, resolves each sample's completed multiscale run, and submits one combined center-section/HTML visualization job while skipping missing or completed samples. | **Cell/vessel 9 batch entry point.** Use after folder-level cell and vessel inference. |
+| `visualize_cells_vessels_all_scales_3d.py` | Streams merged cell instances to calculate equivalent-sphere radii and centroids, writes a log10-count radius histogram, and creates self-contained Plotly views on the native mid grid. The complete view provides toggles for all objects, all cells, cells above 3 micrometers, and each vessel scale. A second orthographic overview contains only postprocessed mid/coarse vessels in one shared blue and a fixed random 5% cell sample. Fine vessels are unfiltered in the complete view. | **Cell/vessel 10: compact all-scale 3D visualization.** Run after merged cell inference, retained multiscale vessel masks, and analytical calibration exist. |
+| `slurmscripts/visualize_cells_vessels_all_scales_3d.slurm` | CPU wrapper that resolves the latest completed multiscale and analytical runs, keeps the fine vessel mask unfiltered, applies the saved scale-specific mid and coarse stage-2 rules, and launches the native-mid-grid 3D renderer. | **Cell/vessel 10a: all-scale 3D submission.** Produces `cells_vessels_all_scales_3d.html`, `cells5pct_vessels_mid_coarse_3d.html`, metadata JSON, and the log-scale cell-radius histogram. |
 | `slurmscripts/run_vessel_cv5.slurm` | In every outer fold, trains the shared combined-scale model, fine-tunes separate unscaled/mid/coarse models, calibrates each scale on its validation data, tests on untouched scale-specific data, and aggregates results. | **Vessel 1: unbiased multiscale 5-fold CV.** Calls the shared training/sweep/test engines and `aggregate_vessel_cv.py`. |
 | `aggregate_vessel_cv.py` | Combines all fold/scale vessel test metrics, produces scale-wise summaries and reports, and creates the scale-grouped Dice violin plots. | **Vessel 1a: CV aggregation.** Called at the end of `run_vessel_cv5.slurm` and reused for fixed-recipe reporting. |
 | `derive_vessel_fixed_recipe.py` | Reads the completed vessel CV artifacts and derives one fixed completed-epoch count and initial cell-probability threshold for each scale. | **Vessel 2: recipe derivation.** Called first by `evaluate_vessel_fixed_recipe_cv.slurm`; its output is `fixed_vessel_recipe.json`. |
@@ -1067,6 +1266,7 @@ path.
 | `aggregate_vessel_calibration.py` | Pools all per-file/per-threshold vessel calibration measurements by scale and selects best-Dice and volume-balanced thresholds under the configured Dice tolerance. | **Vessel 3a: calibration aggregation.** Called by the fixed-recipe vessel evaluation job. |
 | `slurmscripts/run_vessel_final_all.slurm` | Trains a 120-epoch combined all-scale precursor on all 20 slabs, fine-tunes all-data unscaled/mid/coarse deployment models for their selected epochs, performs QC, and writes `deployment_config.json`. | **Vessel 4: final deployment training.** Run with an `afterok` dependency on Vessel 3; output is `runs/run_vessel_final_all_seed46_<jobid>/`. |
 | `submit_vessel_multiscale_inference.sh` | User-facing orchestrator that validates input/final-model paths and submits the CPU preparation, eight-worker GPU array (maximum four concurrent tasks), and dependent CPU union jobs with the required shared environment variables. | **Vessel 5: production multiscale inference entry point.** This is the one command normally submitted for an unscaled full OME-Zarr. |
+| `submit_vessel_multiscale_folder.sh` | Finds every valid raw OME-Zarr in the shared inference directory and submits one complete multiscale vessel dependency chain per tomogram, while skipping existing union outputs and invalid uploads. | **Vessel 5 batch entry point.** Use to process all available tomograms with the fixed final vessel model bundle. |
 | `slurmscripts/prepare_vessel_multiscale_inference.slurm` | CPU stage that initializes the run, downsamples the raw unscaled Zarr to the documented mid/coarse grids, creates output stores, and writes the manifest/`PREPARED` marker. | **Vessel 5a: automatic preparation.** First job submitted by `submit_vessel_multiscale_inference.sh`. |
 | `slurmscripts/infer_vessel_multiscale_array.slurm` | Eight-task GPU-array wrapper; each task processes a disjoint subset of blocks at all three scales with the matching model and parameters from `deployment_config.json`. | **Vessel 5b: parallel scale inference.** Starts after successful preparation and invokes the `infer-worker` command in `vessel_multiscale_ome_zarr.py`. |
 | `slurmscripts/finalize_vessel_multiscale_inference.slurm` | CPU finalization wrapper that checks all worker markers, maps mid/coarse semantic masks back to the original grid, unions them with the unscaled mask, and writes completion metadata. | **Vessel 5c: remapping and union.** Starts only after every array task succeeds. |

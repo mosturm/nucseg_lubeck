@@ -14,10 +14,18 @@ PROJECT_ROOT="/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg"
 REPO_ROOT="${PROJECT_ROOT}/repo/nucseg_lubeck"
 VENV_ACTIVATE="${PROJECT_ROOT}/envs/cellpose-clean/bin/activate"
 
-SAMPLE_ID="${SAMPLE_ID:-tomo_reco_id0004_t0015}"
-DATA_ROOT="${DATA_ROOT:-${PROJECT_ROOT}/data_inference/id0004_t0015/fullzarr}"
+SAMPLE_ID="${SAMPLE_ID:-tomo_reco_id0002_t0015}"
+DATA_ROOT="${DATA_ROOT:-${PROJECT_ROOT}/data_inference/tomos_to_segment/fullzarr}"
 RAW_ZARR="${RAW_ZARR:-${DATA_ROOT}/${SAMPLE_ID}_raw.ome.zarr}"
-CELL_ZARR="${CELL_ZARR:-${DATA_ROOT}/${SAMPLE_ID}_cells_cpneg2p25_instances_merged.ome.zarr}"
+if [[ -z "${CELL_ZARR:-}" ]]; then
+    MERGED_CELL_ZARR="${DATA_ROOT}/${SAMPLE_ID}_cells_cpneg2p25_instances_merged.ome.zarr"
+    DISTRIBUTED_CELL_ZARR="${DATA_ROOT}/${SAMPLE_ID}_cells_cpneg2p25.ome.zarr"
+    if [[ -d "${MERGED_CELL_ZARR}" ]]; then
+        CELL_ZARR="${MERGED_CELL_ZARR}"
+    else
+        CELL_ZARR="${DISTRIBUTED_CELL_ZARR}"
+    fi
+fi
 VESSEL_ZARR="${VESSEL_ZARR:-${DATA_ROOT}/${SAMPLE_ID}_vessels_multiscale_union.ome.zarr}"
 OUTDIR="${OUTDIR:-${DATA_ROOT}/${SAMPLE_ID}_cell_vessel_center_sections}"
 VESSEL_RUN_ROOT="${VESSEL_RUN_ROOT:-}"
