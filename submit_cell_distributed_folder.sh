@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-PROJECT_ROOT="${PROJECT_ROOT:-/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg}"
+PROJECT_ROOT="${PROJECT_ROOT:-/projects/scc/UGOE/UPFB/UPRP/scc_uprp_salditt/dir.project/nucseg}"
 REPO_ROOT="${PROJECT_ROOT}/repo/nucseg_lubeck"
 INPUT_DIR="${INPUT_DIR:-${PROJECT_ROOT}/data_inference/tomos_to_segment/fullzarr}"
 SKIP_EXISTING="${SKIP_EXISTING:-1}"

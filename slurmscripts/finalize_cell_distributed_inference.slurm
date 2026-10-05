@@ -4,14 +4,14 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=04:00:00
-#SBATCH --output=/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/runs/cell-dist-finalize-%j.out
-#SBATCH --error=/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg/runs/cell-dist-finalize-%j.err
+#SBATCH --output=/projects/scc/UGOE/UPFB/UPRP/scc_uprp_salditt/dir.project/nucseg/runs/cell-dist-finalize-%j.out
+#SBATCH --error=/projects/scc/UGOE/UPFB/UPRP/scc_uprp_salditt/dir.project/nucseg/runs/cell-dist-finalize-%j.err
 
 set -euo pipefail
 : "${RUN_ROOT:?Missing RUN_ROOT}"
 : "${OUTPUT_ZARR:?Missing OUTPUT_ZARR}"
 
-PROJECT_ROOT="/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg"
+PROJECT_ROOT="${PROJECT_ROOT:-/projects/scc/UGOE/UPFB/UPRP/scc_uprp_salditt/dir.project/nucseg}"
 SCRIPT="${PROJECT_ROOT}/repo/nucseg_lubeck/cell_distributed_ome_zarr.py"
 VENV="${PROJECT_ROOT}/envs/cellpose-clean/bin/activate"
 

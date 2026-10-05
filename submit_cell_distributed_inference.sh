@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-PROJECT_ROOT="${PROJECT_ROOT:-/mnt/ceph-hdd/projects/scc_uprp_salditt/nucseg}"
+PROJECT_ROOT="${PROJECT_ROOT:-/projects/scc/UGOE/UPFB/UPRP/scc_uprp_salditt/dir.project/nucseg}"
 REPO_ROOT="${PROJECT_ROOT}/repo/nucseg_lubeck"
 SLURM_ROOT="${REPO_ROOT}/slurmscripts"
 
