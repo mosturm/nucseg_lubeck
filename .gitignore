@@ -1,11 +1,62 @@
-# Ignore folders at repo root
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+/envs/
+
+# Editor and operating-system metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Runtime logs and scheduler output
+*.log
+*.out
+*.err
+slurm-*.out
+slurm-*.err
+
+# Temporary working directories
+/tmp*/
+
+# Large/generated data at repository root
 /png_eval/
 /dataset/
 /models/
+/runs/
+/data_inference/
+/data_cell_only/
+/data_vessel_only/
 
-# Ignore all .tif files in the main (root) folder only
-/*.tif
-/*.nrrd
+# Microscopy, label, and volumetric data
+*.tif
+*.tiff
+*.nrrd
+*.nii
+*.nii.gz
+*.ome.zarr/
 
-# Ignore VScode
-.vscode
+# Registration input tables and generated results. Keep scripts, SLURM files,
+# Markdown, info.txt, and registration_requirements.json under version control.
+/register/Hippo002_tables_in_tomos/
+/register/Hippo002_table_correlation/
+/register/analysis/
+/register/analysis_cov_*/
+/register/association_overview/
+/register/audit_output/
+/register/paper_radius/
+/register/features/
+/register/**/*.csv
+/register/**/*.csv.gz
+/register/**/*.tsv
+/register/**/*.xlsx
+/register/*.zip
+
+# Locally generated preview
+/cell_radius_histogram_log10_preview.png
