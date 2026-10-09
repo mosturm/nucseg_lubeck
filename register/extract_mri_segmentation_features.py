@@ -205,7 +205,9 @@ class ModalityGeometry:
             soma_voxels=np.zeros(len(frame), dtype=np.uint64),
             vessel_voxels=np.zeros(len(frame), dtype=np.uint64),
             cell_count=np.zeros(len(frame), dtype=np.uint32),
-            radius_sum=np.zeros((len(frame), 5), dtype=np.float64),
+            # Columns store sum(R^1), sum(R^2), sum(R^3), sum(R^4),
+            # sum(R^5), and sum(R^7), respectively.
+            radius_sum=np.zeros((len(frame), 6), dtype=np.float64),
             radius_median=[[] for _ in range(len(frame))],
         )
 
@@ -357,10 +359,11 @@ def assign_instances(
         for row, radius in zip(rows[valid], radii[valid]):
             geometry.cell_count[row] += 1
             geometry.radius_sum[row, 0] += radius
-            geometry.radius_sum[row, 1] += radius**3
-            geometry.radius_sum[row, 2] += radius**4
-            geometry.radius_sum[row, 3] += radius**5
-            geometry.radius_sum[row, 4] += radius**7
+            geometry.radius_sum[row, 1] += radius**2
+            geometry.radius_sum[row, 2] += radius**3
+            geometry.radius_sum[row, 3] += radius**4
+            geometry.radius_sum[row, 4] += radius**5
+            geometry.radius_sum[row, 5] += radius**7
             geometry.radius_median[row].append(float(radius))
 
 
@@ -432,14 +435,37 @@ def finalize_geometry(
     n = len(frame)
     basis_determinant = np.full(n, np.nan)
     basis_condition = np.full(n, np.nan)
+    edge_lengths_tomo_voxels = np.full((n, 3), np.nan)
+    max_body_diagonal_tomo_voxels = np.full(n, np.nan)
+    owner_basis = np.full((n, 3, 3), np.nan)
+    diagonal_signs = np.array(
+        [
+            [sign_i, sign_j, sign_k]
+            for sign_i in (-1.0, 1.0)
+            for sign_j in (-1.0, 1.0)
+            for sign_k in (-1.0, 1.0)
+        ]
+    )
     for tomo in TOMOGRAMS:
         rows = np.flatnonzero((geometry.owner == tomo) & geometry.valid_owner_basis)
         if len(rows):
-            basis_determinant[rows] = np.linalg.det(geometry.bases[tomo][rows])
-            basis_condition[rows] = np.linalg.cond(geometry.bases[tomo][rows])
+            selected_bases = geometry.bases[tomo][rows]
+            owner_basis[rows] = selected_bases
+            basis_determinant[rows] = np.linalg.det(selected_bases)
+            basis_condition[rows] = np.linalg.cond(selected_bases)
+            edge_lengths_tomo_voxels[rows] = np.linalg.norm(selected_bases, axis=1)
+            body_diagonals = np.einsum(
+                "nij,sj->nsi", selected_bases, diagonal_signs
+            )
+            max_body_diagonal_tomo_voxels[rows] = np.max(
+                np.linalg.norm(body_diagonals, axis=2), axis=1
+            )
 
-    footprint_um3 = np.abs(basis_determinant) * voxel_size_um**3
+    footprint_voxels_equivalent = np.abs(basis_determinant)
+    footprint_um3 = footprint_voxels_equivalent * voxel_size_um**3
     supplied_coverage = pd.to_numeric(frame["coverage_percent"], errors="coerce").to_numpy(float)
+    coverage_fraction = supplied_coverage / 100.0
+    covered_footprint_voxels_equivalent = footprint_voxels_equivalent * coverage_fraction
     covered_um3 = footprint_um3 * supplied_coverage / 100.0
     voxel_um3 = voxel_size_um**3
     reconstructed = reconstructed_bounds_coverage(
@@ -453,16 +479,23 @@ def finalize_geometry(
     radii_median = np.array(
         [np.median(values) if values else np.nan for values in geometry.radius_median]
     )
-    r3 = geometry.radius_sum[:, 1]
+    r2 = geometry.radius_sum[:, 1]
+    r3 = geometry.radius_sum[:, 2]
     volume_weighted = np.divide(
-        geometry.radius_sum[:, 2], r3, out=np.full(n, np.nan), where=r3 > 0
+        geometry.radius_sum[:, 3], r3, out=np.full(n, np.nan), where=r3 > 0
     )
     effective_r7_r3 = np.power(
-        np.divide(geometry.radius_sum[:, 4], r3, out=np.full(n, np.nan), where=r3 > 0),
+        np.divide(geometry.radius_sum[:, 5], r3, out=np.full(n, np.nan), where=r3 > 0),
         0.25,
     )
     effective_r5_r3 = np.sqrt(
-        np.divide(geometry.radius_sum[:, 3], r3, out=np.full(n, np.nan), where=r3 > 0)
+        np.divide(geometry.radius_sum[:, 4], r3, out=np.full(n, np.nan), where=r3 > 0)
+    )
+    surface_to_volume_radius_inverse = np.divide(
+        r2, r3, out=np.full(n, np.nan), where=r3 > 0
+    )
+    volume_to_surface_radius = np.divide(
+        r3, r2, out=np.full(n, np.nan), where=r2 > 0
     )
 
     center = np.full(n, np.nan)
@@ -474,6 +507,25 @@ def finalize_geometry(
     frame["local_basis_valid"] = geometry.valid_owner_basis.astype(np.uint8)
     frame["local_basis_determinant"] = basis_determinant
     frame["local_basis_condition"] = basis_condition
+    frame["local_footprint_edge_mri_i_tomo_voxels"] = edge_lengths_tomo_voxels[:, 0]
+    frame["local_footprint_edge_mri_j_tomo_voxels"] = edge_lengths_tomo_voxels[:, 1]
+    frame["local_footprint_edge_mri_k_tomo_voxels"] = edge_lengths_tomo_voxels[:, 2]
+    frame["local_footprint_max_body_diagonal_tomo_voxels"] = (
+        max_body_diagonal_tomo_voxels
+    )
+    frame["local_footprint_max_body_diagonal_um"] = (
+        max_body_diagonal_tomo_voxels * voxel_size_um
+    )
+    for tomo_axis, tomo_axis_name in enumerate("ijk"):
+        for mri_axis, mri_axis_name in enumerate("ijk"):
+            frame[
+                f"local_basis_tomo_{tomo_axis_name}_per_mri_{mri_axis_name}"
+            ] = owner_basis[:, tomo_axis, mri_axis]
+    frame["local_footprint_voxels_equivalent"] = footprint_voxels_equivalent
+    frame["coverage_fraction"] = coverage_fraction
+    frame["covered_footprint_voxels_equivalent"] = (
+        covered_footprint_voxels_equivalent
+    )
     frame["local_footprint_volume_um3"] = footprint_um3
     frame["covered_footprint_volume_um3"] = covered_um3
     frame["reconstructed_bounds_coverage_percent"] = reconstructed
@@ -494,6 +546,12 @@ def finalize_geometry(
         where=covered_um3 > 0,
     )
     frame["cell_count"] = geometry.cell_count
+    frame["cell_radius_sum_r1_um"] = geometry.radius_sum[:, 0]
+    frame["cell_radius_sum_r2_um2"] = geometry.radius_sum[:, 1]
+    frame["cell_radius_sum_r3_um3"] = geometry.radius_sum[:, 2]
+    frame["cell_radius_sum_r4_um4"] = geometry.radius_sum[:, 3]
+    frame["cell_radius_sum_r5_um5"] = geometry.radius_sum[:, 4]
+    frame["cell_radius_sum_r7_um7"] = geometry.radius_sum[:, 5]
     frame["cell_density_per_mm3"] = np.divide(
         count * 1e9, covered_um3, out=np.full(n, np.nan), where=covered_um3 > 0
     )
@@ -502,6 +560,10 @@ def finalize_geometry(
     frame["cell_radius_volume_weighted_um"] = volume_weighted
     frame["cell_radius_effective_r7_r3_um"] = effective_r7_r3
     frame["cell_radius_effective_r5_r3_um"] = effective_r5_r3
+    frame["cell_surface_to_volume_radius_inverse_um_inv"] = (
+        surface_to_volume_radius_inverse
+    )
+    frame["cell_volume_to_surface_radius_um"] = volume_to_surface_radius
 
     output_path = output_dir / f"hippo002_{geometry.name}_segmentation_features.csv.gz"
     frame.to_csv(output_path, index=False, compression="gzip")
@@ -621,7 +683,7 @@ def main() -> None:
         for geometry in geometries
     ]
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "method": "local_affine_MRI_footprints_from_neighboring_registered_centers",
         "modalities": modalities,
         "voxel_size_um": args.voxel_size_um,
@@ -633,6 +695,12 @@ def main() -> None:
             "volume_weighted": "sum(R^4)/sum(R^3)",
             "effective_r7_r3": "(sum(R^7)/sum(R^3))^(1/4)",
             "effective_r5_r3": "(sum(R^5)/sum(R^3))^(1/2)",
+            "surface_to_volume_radius_inverse": "sum(R^2)/sum(R^3) [1/um]",
+            "volume_to_surface_radius": "sum(R^3)/sum(R^2) [um]",
+            "sphere_geometry_note": (
+                "Exact area/volume is 3*sum(R^2)/sum(R^3), and exact volume/area "
+                "is sum(R^3)/(3*sum(R^2)); constant factors do not affect correlation or R2."
+            ),
         },
         "limitations": [
             "MRI footprints are local-affine reconstructions from neighboring centers, not exact transformed corners.",

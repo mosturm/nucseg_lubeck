@@ -29,9 +29,12 @@ VESSEL_0029="${DATA_ROOT}/tomo_reco_id0004_t0029_vessels_multiscale_union.ome.za
 
 ALLOW_UNMERGED="${ALLOW_UNMERGED:-0}"
 REQUIRE_CONTROLS="${REQUIRE_CONTROLS:-1}"
-COVERAGE_MIN="${COVERAGE_MIN:-25}"
+COVERAGE_MIN="${COVERAGE_MIN:-80}"
 MIN_CELLS_RADIUS="${MIN_CELLS_RADIUS:-5}"
 SPATIAL_BLOCK_SIZE="${SPATIAL_BLOCK_SIZE:-3}"
+NEAR_ZERO_ABS_SPEARMAN="${NEAR_ZERO_ABS_SPEARMAN:-0.10}"
+ANALYSIS_NAME="${ANALYSIS_NAME:-analysis_cov_${COVERAGE_MIN%.*}}"
+ANALYSIS_DIR="${RUN_ROOT}/${ANALYSIS_NAME}"
 
 mkdir -p "${RUN_ROOT}" "${PROJECT_ROOT}/.cache/matplotlib"
 exec > >(tee -a "${RUN_ROOT}/workflow.log") 2>&1
@@ -179,18 +182,24 @@ done
 
 python -u "${REGISTER_ROOT}/analyze_mri_segmentation_correlations.py" \
     --features-dir "${RUN_ROOT}/features" \
-    --output-dir "${RUN_ROOT}/analysis" \
+    --output-dir "${ANALYSIS_DIR}" \
     --coverage-min "${COVERAGE_MIN}" \
     --min-cells-radius "${MIN_CELLS_RADIUS}" \
     --spatial-block-size "${SPATIAL_BLOCK_SIZE}" \
     --folds 5 \
-    --seed 46
+    --seed 46 \
+    --near-zero-abs-spearman "${NEAR_ZERO_ABS_SPEARMAN}"
+
+python -u "${REGISTER_ROOT}/plot_all_association_heatmaps.py" \
+    --results "${ANALYSIS_DIR}/all_univariate_correlations_and_spatial_cv.csv" \
+    --output-dir "${ANALYSIS_DIR}/plots"
 
 cat > "${RUN_ROOT}/README_RESULTS.txt" <<EOF
 Hippo002 MRI-segmentation exploratory workflow
 
 features/   Joined MRI and segmentation feature tables
-analysis/   Correlation tables, spatial-CV results, and figures
+${ANALYSIS_NAME}/   Correlation tables, spatial-CV results, and figures
+${ANALYSIS_NAME}/raw_voxel_tables/   Coverage-filtered raw MRI/segmentation values
 audit/      Coordinate, coverage, and 48-hypothesis orientation checks
 dki_investigation/  DKI-only diagnostics; DKI was not included in correlations
 
@@ -201,6 +210,10 @@ Cell labels:
 Interpretation remains exploratory because local-affine voxel footprints were
 reconstructed from neighbouring registered centres. An independent specimen is
 still required for a biological generalization estimate.
+
+Surface/volume theory markers:
+  sum(R^2)/sum(R^3) [1/um]
+  sum(R^3)/sum(R^2) [um]
 EOF
 
 echo "Completed: ${RUN_ROOT}"

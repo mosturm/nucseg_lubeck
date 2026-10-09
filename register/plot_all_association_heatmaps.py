@@ -49,6 +49,8 @@ COLUMN_ORDER = [
     "cell_radius_volume_weighted_um",
     "cell_radius_effective_r5_r3_um",
     "cell_radius_effective_r7_r3_um",
+    "cell_surface_to_volume_radius_inverse_um_inv",
+    "cell_volume_to_surface_radius_um",
     "f_vessel_seg",
 ]
 
@@ -60,6 +62,8 @@ COLUMN_LABELS = {
     "cell_radius_volume_weighted_um": "Volume-weighted radius\n" + r"$\Sigma r^4/\Sigma r^3$",
     "cell_radius_effective_r5_r3_um": "Effective radius\n" + r"$(\Sigma r^5/\Sigma r^3)^{1/2}$",
     "cell_radius_effective_r7_r3_um": "Effective radius\n" + r"$(\Sigma r^7/\Sigma r^3)^{1/4}$",
+    "cell_surface_to_volume_radius_inverse_um_inv": "Surface/volume marker\n" + r"$\Sigma r^2/\Sigma r^3$",
+    "cell_volume_to_surface_radius_um": "Volume/surface marker\n" + r"$\Sigma r^3/\Sigma r^2$",
     "f_vessel_seg": "Vessel fraction\n" + r"$f_{vessel}^{seg}$",
 }
 
@@ -83,7 +87,7 @@ def draw_heatmap(
     norm: TwoSlopeNorm,
     significant: np.ndarray | None = None,
 ) -> None:
-    figure, axis = plt.subplots(figsize=(20, 12))
+    figure, axis = plt.subplots(figsize=(24, 12))
     figure.subplots_adjust(left=0.12, right=0.91, top=0.90, bottom=0.27)
     image = axis.imshow(values, cmap="RdBu_r", norm=norm, aspect="auto")
 
@@ -137,7 +141,7 @@ def draw_heatmap(
         figure.text(
             0.5,
             0.035,
-            "Bold values: significant after Benjamini-Hochberg correction across all 80 tests (q < 0.05).",
+            f"Bold values: significant after Benjamini-Hochberg correction across all {values.size} tests (q < 0.05).",
             ha="center",
             fontsize=12,
         )
@@ -178,15 +182,17 @@ def main() -> None:
     missing = sorted(expected - observed)
     if missing:
         print(
-            f"Warning: {len(missing)} of 80 planned associations were not estimable; "
+            f"Warning: {len(missing)} of {len(expected)} planned associations were not estimable; "
             "they will be shown as NA."
         )
+
+    association_count = len(expected)
 
     rho = matrix(frame, "spearman_rho")
     qvalue = matrix(frame, "spearman_p_fdr_bh")
     draw_heatmap(
         rho,
-        output_dir / "all_80_associations_spearman_heatmap",
+        output_dir / f"all_{association_count}_associations_spearman_heatmap",
         "MRI-Histology Associations in Hippo002",
         r"Spearman $\rho$",
         TwoSlopeNorm(vmin=-1.0, vcenter=0.0, vmax=1.0),
@@ -199,7 +205,7 @@ def main() -> None:
     upper = max(0.5, float(np.max(finite)))
     draw_heatmap(
         cv_r2,
-        output_dir / "all_80_associations_spatial_cv_r2_heatmap",
+        output_dir / f"all_{association_count}_associations_spatial_cv_r2_heatmap",
         "Held-Out Spatial Prediction in Hippo002",
         r"Spatial-CV $R^2$",
         TwoSlopeNorm(vmin=lower, vcenter=0.0, vmax=upper),
