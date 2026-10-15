@@ -433,6 +433,7 @@ def finalize_geometry(
 ) -> dict[str, object]:
     frame = geometry.frame.copy()
     n = len(frame)
+    frame["mri_table_row"] = np.arange(n, dtype=np.int64)
     basis_determinant = np.full(n, np.nan)
     basis_condition = np.full(n, np.nan)
     edge_lengths_tomo_voxels = np.full((n, 3), np.nan)
@@ -567,11 +568,51 @@ def finalize_geometry(
 
     output_path = output_dir / f"hippo002_{geometry.name}_segmentation_features.csv.gz"
     frame.to_csv(output_path, index=False, compression="gzip")
+    per_cell_dir = output_dir / "per_cell_radius_tables"
+    per_cell_dir.mkdir(exist_ok=True)
+    cells_per_row = np.fromiter(
+        (len(values) for values in geometry.radius_median), dtype=np.int64, count=n
+    )
+    assigned_cell_count = int(cells_per_row.sum())
+    if assigned_cell_count:
+        repeated_rows = np.repeat(np.arange(n, dtype=np.int64), cells_per_row)
+        radii = np.concatenate(
+            [np.asarray(values, dtype=np.float64) for values in geometry.radius_median if values]
+        )
+        per_cell = pd.DataFrame(
+            {
+                "modality": geometry.name,
+                "mri_table_row": repeated_rows,
+                "analysis_tomogram": geometry.owner[repeated_rows],
+                "mri_i": frame["mri_i"].to_numpy()[repeated_rows],
+                "mri_j": frame["mri_j"].to_numpy()[repeated_rows],
+                "mri_k": frame["mri_k"].to_numpy()[repeated_rows],
+                "cell_radius_um": radii,
+            }
+        )
+    else:
+        per_cell = pd.DataFrame(
+            columns=[
+                "modality",
+                "mri_table_row",
+                "analysis_tomogram",
+                "mri_i",
+                "mri_j",
+                "mri_k",
+                "cell_radius_um",
+            ]
+        )
+    per_cell_path = (
+        per_cell_dir / f"hippo002_{geometry.name}_cell_radii_by_mri_voxel.csv.gz"
+    )
+    per_cell.to_csv(per_cell_path, index=False, compression="gzip")
     eligible = geometry.valid_owner_basis & np.isfinite(covered_um3) & (covered_um3 > 0)
     return {
         "modality": geometry.name,
         "input_table": str(geometry.table_path),
         "output_table": str(output_path),
+        "per_cell_radius_table": str(per_cell_path),
+        "assigned_cells_in_per_cell_table": assigned_cell_count,
         "rows": n,
         "rows_with_valid_local_basis": int(geometry.valid_owner_basis.sum()),
         "rows_with_positive_covered_volume": int(eligible.sum()),

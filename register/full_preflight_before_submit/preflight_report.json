@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "table_count": 27,
+  "specimen_count": 3,
+  "tomogram_count": 12,
+  "tables_with_problems": [],
+  "merged_cell_masks_available": 2,
+  "merged_cell_masks_required": 12,
+  "vessel_masks_available": 6,
+  "vessel_masks_optional": true,
+  "primary_excluded_acquisitions": [
+    "Portugal_DKI"
+  ]
+}

@@ -43,6 +43,7 @@ PRIMARY_TARGETS = [
 ]
 
 RAW_GEOMETRY_COLUMNS = [
+    "mri_table_row",
     "analysis_tomogram",
     "mri_i",
     "mri_j",

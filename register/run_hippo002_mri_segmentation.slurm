@@ -33,6 +33,7 @@ COVERAGE_MIN="${COVERAGE_MIN:-80}"
 MIN_CELLS_RADIUS="${MIN_CELLS_RADIUS:-5}"
 SPATIAL_BLOCK_SIZE="${SPATIAL_BLOCK_SIZE:-3}"
 NEAR_ZERO_ABS_SPEARMAN="${NEAR_ZERO_ABS_SPEARMAN:-0.10}"
+R23_DISTRIBUTION_MIN_CELLS="${R23_DISTRIBUTION_MIN_CELLS:-20}"
 ANALYSIS_NAME="${ANALYSIS_NAME:-analysis_cov_${COVERAGE_MIN%.*}}"
 ANALYSIS_DIR="${RUN_ROOT}/${ANALYSIS_NAME}"
 
@@ -194,12 +195,21 @@ python -u "${REGISTER_ROOT}/plot_all_association_heatmaps.py" \
     --results "${ANALYSIS_DIR}/all_univariate_correlations_and_spatial_cv.csv" \
     --output-dir "${ANALYSIS_DIR}/plots"
 
+python -u "${REGISTER_ROOT}/plot_r23_radius_distributions.py" \
+    --raw-mpm "${ANALYSIS_DIR}/raw_voxel_tables/hippo002_mpm_raw_voxel_values.csv.gz" \
+    --per-cell-radii "${RUN_ROOT}/features/per_cell_radius_tables/hippo002_mpm_cell_radii_by_mri_voxel.csv.gz" \
+    --output-dir "${ANALYSIS_DIR}/r23_distribution_analysis" \
+    --min-cells "${R23_DISTRIBUTION_MIN_CELLS}" \
+    --quantiles 0.10,0.50,0.90 \
+    --examples-per-quantile 3
+
 cat > "${RUN_ROOT}/README_RESULTS.txt" <<EOF
 Hippo002 MRI-segmentation exploratory workflow
 
 features/   Joined MRI and segmentation feature tables
 ${ANALYSIS_NAME}/   Correlation tables, spatial-CV results, and figures
-${ANALYSIS_NAME}/raw_voxel_tables/   Coverage-filtered raw MRI/segmentation values
+${ANALYSIS_NAME}/raw_voxel_tables/   Unfiltered raw MRI/segmentation values plus inclusion flags
+${ANALYSIS_NAME}/r23_distribution_analysis/   R1/r23 distribution figures
 audit/      Coordinate, coverage, and 48-hypothesis orientation checks
 dki_investigation/  DKI-only diagnostics; DKI was not included in correlations
 
