@@ -105,12 +105,11 @@ def parse_tomogram_tokens(value: object, allowed: tuple[str, ...]) -> list[str]:
 
 
 def correction_factor(acquisition: str, predictor: str) -> float:
-    """Return the collaborator-specified multiplicative correction."""
-    if acquisition == "HH_exvivo" and predictor in {
-        "R1",
-        "R2s",
-        "R1_denoised",
-        "R2s_denoised",
-    }:
-        return 0.5
+    """Return the input-table scale factor used during extraction.
+
+    The full-run HH ex-vivo tables already contain the corrected values. An
+    earlier workflow applied another factor of 0.5; saved feature tables from
+    that run retain the desired values in ``*_uncorrected`` columns and the
+    analysis stage restores them automatically.
+    """
     return 1.0

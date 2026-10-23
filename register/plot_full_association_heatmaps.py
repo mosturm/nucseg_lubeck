@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot one Spearman and held-out-R2 heatmap per pooled MRI protocol."""
+"""Plot pooled-protocol, primary, exploratory, and per-specimen heatmaps."""
 
 from __future__ import annotations
 
@@ -46,7 +46,14 @@ def safe_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
 
 
-def draw(frame: pd.DataFrame, value_column: str, output: Path, title: str, significant=False):
+def draw(
+    frame: pd.DataFrame,
+    value_column: str,
+    output: Path,
+    title: str,
+    significant: bool = False,
+    footer: str | None = None,
+):
     predictors = sorted(frame["predictor"].unique())
     lookup = frame.set_index(["predictor", "target"])
     values = np.array(
@@ -91,7 +98,12 @@ def draw(frame: pd.DataFrame, value_column: str, output: Path, title: str, signi
     axis.grid(which="minor", color="white", linewidth=1.0, alpha=0.8)
     axis.tick_params(which="minor", bottom=False, left=False)
     figure.colorbar(image, ax=axis, shrink=0.8, label=colorbar)
-    footer = "Bold: Spearman q < 0.05" if significant else "Leave-one-specimen-out validation where multiple specimens are available"
+    if footer is None:
+        footer = (
+            "Bold: Spearman q < 0.05"
+            if significant
+            else "Leave-one-specimen-out validation where multiple specimens are available"
+        )
     figure.text(0.5, 0.01, footer, ha="center")
     for suffix in ("png", "pdf"):
         figure.savefig(output.with_suffix(f".{suffix}"), dpi=300, bbox_inches="tight")
@@ -141,8 +153,107 @@ def main() -> None:
                 "specimens": int(frame["n_specimens"].max()),
             }
         )
+
+    primary = pooled[pooled["primary_analysis"] == 1].copy()
+    if not primary.empty:
+        primary["predictor"] = (
+            primary["acquisition"].astype(str)
+            + " | "
+            + primary["protocol"].astype(str)
+            + " | "
+            + primary["predictor"].astype(str)
+        )
+        association_count = len(primary)
+        draw(
+            primary,
+            "spearman_rho",
+            args.output_dir / "all_primary_associations__spearman",
+            f"All primary MRI-histology associations ({association_count} estimable pairs)",
+            significant=True,
+        )
+        draw(
+            primary,
+            "heldout_r2",
+            args.output_dir / "all_primary_associations__heldout_r2",
+            f"All primary held-out MRI-histology predictions ({association_count} estimable pairs)",
+        )
+
+    if args.include_exploratory and not pooled.empty:
+        inclusive = pooled.copy()
+        qualifier = np.where(
+            inclusive["primary_analysis"].eq(1),
+            "",
+            "[exploratory] ",
+        )
+        inclusive["predictor"] = (
+            pd.Series(qualifier, index=inclusive.index)
+            + inclusive["acquisition"].astype(str)
+            + " | "
+            + inclusive["protocol"].astype(str)
+            + " | "
+            + inclusive["predictor"].astype(str)
+        )
+        association_count = len(inclusive)
+        draw(
+            inclusive,
+            "spearman_rho",
+            args.output_dir / "all_associations_including_exploratory__spearman",
+            f"All MRI-histology associations, including flagged exploratory data ({association_count} estimable pairs)",
+            significant=True,
+            footer=(
+                "Bold: Spearman q < 0.05; [exploratory] rows are registration-flagged "
+                "and are not part of the primary inference"
+            ),
+        )
+        draw(
+            inclusive,
+            "heldout_r2",
+            args.output_dir / "all_associations_including_exploratory__heldout_r2",
+            f"All held-out predictions, including flagged exploratory data ({association_count} estimable pairs)",
+            footer=(
+                "[exploratory] rows are registration-flagged and are not part of the "
+                "primary inference"
+            ),
+        )
+
+    dataset = results[
+        (results["scope"] == "dataset") & (results["primary_analysis"] == 1)
+    ].copy()
+    if not dataset.empty:
+        dataset["specimen"] = dataset["scope_id"].astype(str).str.split("__").str[1]
+        for specimen, frame in dataset.groupby("specimen", sort=True):
+            frame = frame.copy()
+            frame["predictor"] = (
+                frame["acquisition"].astype(str)
+                + " | "
+                + frame["protocol"].astype(str)
+                + " | "
+                + frame["predictor"].astype(str)
+            )
+            count = len(frame)
+            base = args.output_dir / f"{safe_name(specimen)}__all_primary_associations"
+            draw(
+                frame,
+                "spearman_rho",
+                base.with_name(base.name + "__spearman"),
+                f"{specimen}: all primary MRI-histology associations ({count} estimable pairs)",
+                significant=True,
+                footer="Bold: Spearman q < 0.05 (BH correction across primary dataset-level tests)",
+            )
+            draw(
+                frame,
+                "heldout_r2",
+                base.with_name(base.name + "__spatial_cv_r2"),
+                f"{specimen}: spatially held-out MRI-histology prediction ({count} estimable pairs)",
+                footer="Five-fold spatial-block validation within this specimen",
+            )
+
     pd.DataFrame(index_rows).to_csv(args.output_dir / "heatmap_index.csv", index=False)
-    print(f"Wrote {len(index_rows)} protocol heatmap pairs to {args.output_dir}")
+    print(
+        f"Wrote {len(index_rows)} protocol heatmap pairs, primary and inclusive pooled overviews, "
+        f"and {dataset['specimen'].nunique() if not dataset.empty else 0} specimen overviews "
+        f"to {args.output_dir}"
+    )
 
 
 if __name__ == "__main__":

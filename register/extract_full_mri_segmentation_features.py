@@ -587,7 +587,7 @@ def main() -> None:
         "voxel_size_um": args.voxel_size_um,
         "r23_definition": "sum(r^2)/sum(r^3) [1/um]",
         "r32_not_computed": True,
-        "hh_exvivo_correction": "R1/R2s and denoised variants multiplied by 0.5; uncorrected values retained",
+        "hh_exvivo_scaling": "No additional factor: full-run input tables already contain corrected values",
     }
     (args.output_dir / "extraction_report.json").write_text(
         json.dumps(report, indent=2, default=json_default) + "\n", encoding="utf-8"

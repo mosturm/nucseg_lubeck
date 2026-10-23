@@ -36,6 +36,28 @@ RADIUS_TARGETS = {
     "cell_surface_to_volume_r23_um_inv",
 }
 
+HH_EXVIVO_RESTORE_COLUMNS = {
+    "R1",
+    "R2s",
+    "R1_denoised",
+    "R2s_denoised",
+}
+
+
+def restore_saved_hh_exvivo_scale(
+    frame: pd.DataFrame, acquisition: str, predictors: list[str]
+) -> list[str]:
+    """Undo the obsolete extra factor without rescanning segmentation masks."""
+    restored = []
+    if acquisition != "HH_exvivo":
+        return restored
+    for predictor in predictors:
+        backup = f"{predictor}_uncorrected"
+        if predictor in HH_EXVIVO_RESTORE_COLUMNS and backup in frame.columns:
+            frame[predictor] = pd.to_numeric(frame[backup], errors="coerce")
+            restored.append(predictor)
+    return restored
+
 
 def bh_adjust(values: pd.Series) -> np.ndarray:
     p = pd.to_numeric(values, errors="coerce").to_numpy(float)
@@ -229,11 +251,16 @@ def main() -> None:
     raw_dir.mkdir(exist_ok=True)
     manifest = pd.read_csv(args.features_dir / "feature_manifest.csv")
     frames = {}
+    restored_scale_columns = []
     for row in manifest.itertuples(index=False):
         frame = pd.read_csv(row.feature_table, low_memory=False)
         frame.attrs["coverage_min"] = args.coverage_min
         frame.attrs["min_cells"] = args.min_cells_radius
         predictors = str(row.predictors).split(";")
+        restored = restore_saved_hh_exvivo_scale(frame, row.acquisition, predictors)
+        restored_scale_columns.extend(
+            f"{row.dataset_id}:{predictor}" for predictor in restored
+        )
         frames[row.dataset_id] = (frame, predictors, row)
         write_raw_table(
             frame,
@@ -353,6 +380,7 @@ def main() -> None:
         "r23_only": True,
         "r32_excluded": True,
         "primary_excluded_acquisitions": [] if args.include_portugal_dki_primary else sorted(PRIMARY_EXCLUDED_ACQUISITIONS),
+        "restored_obsolete_hh_exvivo_factor_columns": sorted(restored_scale_columns),
         "association_count": len(results),
         "primary_pooled_association_count": int(
             ((results["scope"] == "pooled_protocol") & (results["primary_analysis"] == 1)).sum()

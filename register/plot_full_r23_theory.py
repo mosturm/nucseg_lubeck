@@ -42,7 +42,12 @@ def main() -> None:
         frames = [pd.read_csv(path, low_memory=False) for path in selected_manifest["feature_table"]]
         frame = pd.concat(frames, ignore_index=True)
         r1 = result.r1_column
-        required = [r1, "cell_surface_to_volume_r23_um_inv", "specimen", "coord_usable", "coverage_percent", "local_basis_valid", "cell_count"]
+        source_r1 = (
+            f"{r1}_uncorrected"
+            if acquisition == "HH_exvivo" and f"{r1}_uncorrected" in frame.columns
+            else r1
+        )
+        required = [source_r1, "cell_surface_to_volume_r23_um_inv", "specimen", "coord_usable", "coverage_percent", "local_basis_valid", "cell_count"]
         selected = frame[required].replace([np.inf, -np.inf], np.nan).dropna()
         selected = selected[
             (selected["coord_usable"] == 1)
@@ -54,7 +59,7 @@ def main() -> None:
         for specimen, group in selected.groupby("specimen"):
             axis.scatter(
                 group["cell_surface_to_volume_r23_um_inv"],
-                group[r1],
+                group[source_r1],
                 s=20,
                 alpha=0.5,
                 edgecolors="none",

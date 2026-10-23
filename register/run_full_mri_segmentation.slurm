@@ -76,6 +76,11 @@ python -u "${REGISTER_ROOT}/plot_full_r23_theory.py" \
   --coverage-min "${COVERAGE_MIN}" \
   --min-cells "${MIN_CELLS_RADIUS}"
 
+python -u "${REGISTER_ROOT}/plot_full_generalization_diagnostics.py" \
+  --results "${RUN_ROOT}/analysis_cov_80/all_univariate_correlations_and_grouped_cv.csv" \
+  --raw-dir "${RUN_ROOT}/analysis_cov_80/raw_voxel_tables" \
+  --output-dir "${RUN_ROOT}/analysis_cov_80/generalization_diagnostics"
+
 cat > "${RUN_ROOT}/README_RESULTS.txt" <<EOF
 Full MRI-XPCT registration analysis
 
@@ -83,11 +88,13 @@ preflight/                 Input-table and segmentation-mask audit
 features/tables/           MRI voxel tables with segmentation features
 features/per_cell_radius_tables/  Every assigned cell radius and provenance
 analysis_cov_80/raw_voxel_tables/ All MRI voxels, plus analysis inclusion flags
-analysis_cov_80/heatmaps/  Pooled-protocol Spearman and held-out R2 heatmaps
+analysis_cov_80/heatmaps/  Primary and explicitly inclusive exploratory heatmaps
 analysis_cov_80/r1_r23_plots/ R1 = intercept + slope * r23 theory plots
+analysis_cov_80/generalization_diagnostics/ Within- versus cross-specimen diagnostics
 
 Primary pooled validation is leave-one-specimen-out across P2/P5/P7.
-Portugal DKI is extracted but excluded from primary heatmaps by default.
+Portugal DKI is excluded from primary heatmaps and included only in heatmaps
+whose filenames contain including_exploratory.
 Only r23=sum(r^2)/sum(r^3) is analyzed; reciprocal r3/r2 is not produced.
 Missing vessel masks yield NA vessel metrics without removing cell/radius results.
 EOF

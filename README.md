@@ -1278,3 +1278,210 @@ path.
 | `slurmscripts/evaluate_vessel_scales.slurm` | Performs threshold sweeps and labeled test inference for models produced by the manual scale fine-tuning job. | **Vessel legacy/manual evaluation.** Companion to `finetune_vessel_scales.slurm`; not used by the current final-model pipeline. |
 | `infer3D_and_plot.py` | Standalone 3D inference and plotting utility for quickly inspecting a model, image, and segmentation outside the structured CV/Zarr pipelines. | **Ad hoc diagnostics/legacy visualization.** Run manually when a small-volume visual check is useful. |
 | `infer_combined.py` | Runs the older dual-model cell-plus-vessel inference path with separate models, mask IDs, and Cellpose thresholds. | **Legacy combined inference.** Predates the final all-data cell model and automatic three-scale vessel-union workflow. |
+
+## MRI-XPCT Registration: Segmentation Masks to Correlation Heatmaps
+
+This workflow maps the completed high-resolution XPCT segmentations into the
+registered MRI voxel footprints and tests MRI-histology associations. It does
+not rerun Cellpose. It first derives histological metrics from the segmentation
+masks for each MRI voxel and then performs the correlations and grouped
+validation.
+
+The detailed upload and troubleshooting guide is
+[`register/FULL_REGISTRATION_WORKFLOW.md`](register/FULL_REGISTRATION_WORKFLOW.md).
+The steps below are the compact replication path.
+
+### 1. Inputs
+
+The workflow expects:
+
+- `register/register_full_input/fuer_Mo/`: 27 collaborator-provided CSV tables
+  for P2, P5, and P7. Each row contains an MRI voxel index, MRI predictors,
+  coverage, tomogram ownership, and the registered eight-corner footprint in
+  XPCT coordinates.
+- `data_inference/tomos_to_segment/fullzarr/`: 12 cell-instance masks named
+  `<sample>_cells_cpneg2p25.ome.zarr` for P2/id0014, P5/id0004, and P7/id0011.
+- Optional vessel masks named
+  `<sample>_vessels_multiscale_union.ome.zarr`. Missing vessel masks do not
+  block the cell analysis; their vessel metrics remain `NA`.
+
+The current jobs assume that the masks and registered XPCT coordinates share
+the same ZYX grid, that each full mask has shape `2156 x 2560 x 2560`, and that
+the XPCT spacing is isotropic `0.65 um`. Change and revalidate the merge shape,
+voxel spacing, and registration transforms before applying the workflow to a
+different acquisition geometry.
+
+The large registration archive, segmentation Zarrs, trained models, and run
+outputs are data artifacts and are not stored in Git. They must be transferred
+separately. If only `register_full_input.zip` is present, extract it once:
+
+```bash
+cd "${PROJECT_DIR}/nucseg/repo/nucseg_lubeck/register"
+python -m zipfile -e register_full_input.zip register_full_input
+```
+
+### 2. One-command submission
+
+```bash
+PROJECT_ROOT="${PROJECT_DIR}/nucseg"
+REGISTER_ROOT="${PROJECT_ROOT}/repo/nucseg_lubeck/register"
+DATA_ROOT="${PROJECT_ROOT}/data_inference/tomos_to_segment/fullzarr"
+
+source "${PROJECT_ROOT}/envs/cellpose-clean/bin/activate"
+export PROJECT_ROOT DATA_ROOT
+cd "${REGISTER_ROOT}"
+bash submit_full_registration.sh
+```
+
+`submit_full_registration.sh` creates one timestamped run and submits three
+`afterok`-linked stages:
+
+1. **Cell-instance reconciliation:**
+   `merge_full_cell_instances_array.slurm` checks all 12 tomograms, reuses
+   structurally valid merged masks, and calls
+   `merge_block_instances_ome_zarr.py` only for missing masks. This reconciles
+   cell IDs split at distributed-inference block boundaries so radius metrics
+   are not biased toward small objects.
+2. **MRI-voxel feature extraction:**
+   `extract_full_features_array.slurm` runs one tomogram per array task and
+   calls `extract_full_mri_segmentation_features.py`. It uses the registered
+   eight corners directly, including axis permutations and flips, and assigns
+   XPCT foreground and cell instances to their MRI voxel footprints.
+3. **Analysis and figures:** `run_full_mri_segmentation.slurm` performs a
+   strict post-merge audit, combines extraction results, runs
+   `analyze_full_mri_segmentation_correlations.py`, and calls both plotting
+   scripts.
+
+The submission command prints the merge, extraction, and analysis job IDs plus
+the final `RUN_ROOT`. Monitor them with:
+
+```bash
+RUN_ROOT=$(ls -dt "${PROJECT_ROOT}/runs/run_full_mri_segmentation_"* | head -1)
+cat "${RUN_ROOT}/submitted_pipeline.txt"
+
+MERGE_JOB=$(awk -F= '$1=="merge_job"{print $2}' "${RUN_ROOT}/submitted_pipeline.txt")
+EXTRACT_JOB=$(awk -F= '$1=="extract_job"{print $2}' "${RUN_ROOT}/submitted_pipeline.txt")
+ANALYSIS_JOB=$(awk -F= '$1=="analysis_job"{print $2}' "${RUN_ROOT}/submitted_pipeline.txt")
+
+squeue -j "${MERGE_JOB},${EXTRACT_JOB},${ANALYSIS_JOB}" \
+  -o "%.18i %.24j %.10T %.12M %.40R"
+```
+
+### 3. Histological metrics and statistical design
+
+For every registered MRI voxel, extraction records `f_soma`, cell density,
+mean and median equivalent-sphere radius, volume-weighted/effective radii,
+`sum(r^2)/sum(r^3)` (`r23`), cell surface density, and `f_vessel` where a
+vessel mask exists. Raw per-cell radii, volumes, centroids, instance IDs, MRI
+voxel coordinates, and provenance are retained for reproducibility.
+
+Primary regressions require valid geometry and at least 80% registered
+coverage. Radius-based regressions additionally require at least five assigned
+cells. The analysis reports linear fits, Pearson and Spearman associations,
+Benjamini-Hochberg-adjusted Spearman p-values, and held-out prediction metrics.
+Single-dataset validation uses spatial blocks; pooled protocol validation holds
+out one specimen at a time across P2, P5, and P7. P2 contains six tomograms
+(`0014`: 0001, 0008, 0015, 0022, 0029, 0036), P5 contains two (`0004`: 0022,
+0029), and P7 contains four (`0011`: 0001, 0002, 0003, 0004). The 12 tomograms
+are therefore clustered within three biological specimens.
+
+Portugal DKI is extracted and plotted separately and in explicitly inclusive
+exploratory overviews, but is excluded from primary pooled tables and primary heatmaps because its
+registration was flagged by the collaborator. The full-run Hamburg ex-vivo
+tables already contain the corrected R1/R2s values, so no additional factor is
+applied. For the first completed run, the analysis restores the intended values
+from the retained `*_uncorrected` columns before creating raw tables and plots.
+
+### 4. Outputs
+
+The main outputs are written below
+`runs/run_full_mri_segmentation_<timestamp>/`:
+
+```text
+preflight/
+  registration_table_audit.csv
+  segmentation_mask_inventory.csv
+features/
+  feature_manifest.csv
+  tables/*_segmentation_features.csv.gz
+  per_cell_radius_tables/*_cell_radii_by_mri_voxel.csv.gz
+analysis_cov_80/
+  raw_voxel_tables/*_raw_voxel_values.csv.gz
+  all_univariate_correlations_and_grouped_cv.csv
+  primary_pooled_protocol_correlations_and_loso_cv.csv
+  r1_vs_r23_theory_fits.csv
+  experiment_feasibility.csv
+  heatmaps/*.png
+  r1_r23_plots/*.png
+  generalization_diagnostics/*.png
+```
+
+The `heatmaps/` directory contains one figure pair per acquisition/protocol and
+the two cross-protocol overview matrices
+`all_primary_associations__spearman.png` and
+`all_primary_associations__heldout_r2.png`. The Spearman overview prints the
+signed coefficient in every cell and bolds associations with FDR-adjusted
+`q < 0.05`.
+
+The companion files
+`all_associations_including_exploratory__spearman.png` and
+`all_associations_including_exploratory__heldout_r2.png` additionally include
+the registration-flagged Portugal DKI `FA`, `MD`, and `MK` rows. They are for
+exploration and do not replace the primary overview.
+
+The same folder contains all-association heatmaps for P2, P5, and P7. Their
+held-out values are five-fold spatial-block results within one specimen. The
+pooled overview remains the harder leave-one-specimen-out test. The
+`generalization_diagnostics/` folder adds validation-ladder heatmaps, a
+specimen effect-consistency matrix, association-strength-versus-LOSO plots,
+and selected specimen-colored scatter plots.
+
+The raw voxel tables retain every MRI voxel with its coverage and analysis
+inclusion flags; they are not prefiltered to 80%. The primary pooled CSV and
+heatmaps are the concise reporting outputs. `COMPLETED` in the run root means
+that merging, extraction, analysis, and plotting all finished successfully.
+
+### 5. Updating plots without repeating extraction
+
+For an already completed run, `run_full_posthoc_plots.slurm` reuses `features/`,
+restores the intended HH ex-vivo scale from the retained backup columns, and
+regenerates analysis tables and all plots. It does not read segmentation masks.
+
+```bash
+PROJECT_ROOT="${PROJECT_DIR}/nucseg"
+REGISTER_ROOT="${PROJECT_ROOT}/repo/nucseg_lubeck/register"
+RUN_ROOT="${PROJECT_ROOT}/runs/run_full_mri_segmentation_20261015_152251_15836"
+
+export PROJECT_ROOT RUN_ROOT
+cd "${REGISTER_ROOT}"
+POSTHOC_JOB=$(sbatch --parsable --export=ALL run_full_posthoc_plots.slurm)
+echo "Submitted ${POSTHOC_JOB}"
+```
+
+The marker `${RUN_ROOT}/POSTHOC_PLOTS_COMPLETED` confirms success.
+
+For a corrected P5/0022 raw volume, use
+[`register/CORRECTED_P5_T0022_WORKFLOW.md`](register/CORRECTED_P5_T0022_WORKFLOW.md).
+Its submitter stages and validates new cell and vessel masks, backs up the old
+canonical masks, recomputes only P5/0022, and then rebuilds the complete
+12-tomogram analysis.
+
+### 6. Registration workflow files
+
+| File | Task | Called by |
+| --- | --- | --- |
+| `register/full_registration_config.py` | Defines specimen/tomogram mappings, table discovery, mask naming, primary exclusions, and documented MRI corrections. | All full-registration Python stages. |
+| `register/audit_full_registration_inputs.py` | Audits table schema, coordinates, ownership, geometry, and segmentation-mask availability. | Manual preflight and final analysis job. |
+| `register/merge_full_cell_instances_array.slurm` | Reconciles or reuses the 12 cell-instance masks. | `register/submit_full_registration.sh`, stage 1. |
+| `register/extract_full_features_array.slurm` | Distributes exact MRI-footprint feature extraction across the 12 tomograms. | `register/submit_full_registration.sh`, stage 2. |
+| `register/extract_full_mri_segmentation_features.py` | Computes MRI-voxel histology metrics and writes full per-cell radius/provenance tables. | Extraction array and final combination. |
+| `register/analyze_full_mri_segmentation_correlations.py` | Runs filtered associations, spatially grouped validation, leave-one-specimen-out validation, FDR correction, and R1-r23 theory fits. | Final analysis job. |
+| `register/plot_full_association_heatmaps.py` | Creates signed Spearman and held-out-R2 heatmaps, with exploratory datasets labeled separately. | Final analysis job. |
+| `register/plot_full_r23_theory.py` | Creates R1 versus `r23` theory figures with grouped held-out performance. | Final analysis job. |
+| `register/plot_full_generalization_diagnostics.py` | Compares within-specimen spatial CV with pooled leave-one-specimen-out performance and plots effect consistency across P2/P5/P7. | Final analysis job and post-hoc plotting job. |
+| `register/run_full_mri_segmentation.slurm` | Combines features and runs the complete statistical/plotting stage. | `register/submit_full_registration.sh`, stage 3. |
+| `register/run_full_posthoc_plots.slurm` | Reuses completed feature tables to repair the obsolete HH ex-vivo plotting scale and regenerate statistics, per-specimen heatmaps, and diagnostics without rescanning masks. | Optional post-hoc update for an existing full run. |
+| `register/submit_full_registration.sh` | Creates the run directory and submits the complete dependency chain. | User-facing entry point. |
+| `register/promote_corrected_p5_t0022.slurm` | Merges and validates corrected P5/0022 masks, backs up the old canonical masks, and promotes the corrected masks. | Corrected P5/0022 workflow. |
+| `register/extract_corrected_p5_t0022.slurm` | Reuses 11 completed extraction partials and recomputes only P5/0022. | Corrected P5/0022 workflow. |
+| `register/submit_corrected_p5_t0022.sh` | Submits corrected cell and vessel inference, mask promotion, incremental extraction, and full reanalysis as one dependency chain. | User-facing corrected P5/0022 entry point. |
